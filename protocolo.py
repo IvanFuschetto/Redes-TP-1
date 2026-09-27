@@ -109,7 +109,7 @@ class HeaderFlags:
         return (flags & 0xFF).to_bytes(length=1, byteorder='big')
 
     @classmethod
-    def deserialize(cls, flags_byte):
+    def deserialize(cls, flags_byte: bytes):
         tipo = cls.Type((flags_byte >> BIT_SACK) & 1)
         operation = cls.Operation((flags_byte >> BIT_UPDOWN) & 1)
         ack = bool((flags_byte >> BIT_ACK) & 1)
@@ -125,9 +125,9 @@ class HeaderFlags:
 
 
 def test_HeaderFlags_serialize():
-    assert HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.UPLOAD, True, False, True).serialize() == 0b01101000
-    assert HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.DOWNLOAD, True, False, True, 1).serialize() == 0b00101001
-    assert HeaderFlags(HeaderFlags.Type.SACK, HeaderFlags.Operation.UPLOAD, True, False, True, 3).serialize() == 0b11101011
+    assert HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.UPLOAD, True, False, True).serialize() == 0b01101000.to_bytes(length=1, byteorder='big')
+    assert HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.DOWNLOAD, True, False, True, 1).serialize() == 0b00101001.to_bytes(length=1, byteorder='big')
+    assert HeaderFlags(HeaderFlags.Type.SACK, HeaderFlags.Operation.UPLOAD, True, False, True, 3).serialize() == 0b11101011.to_bytes(length=1, byteorder='big')
 
 def test_HeaderFlags_deserialize():
     assert HeaderFlags.deserialize(0b01101000) == HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.UPLOAD, True, False, True)
@@ -144,21 +144,24 @@ class PacketHeader:
         self.ack_number = ack_number
         self.flags = flags
 
-    def serialize(self):
+    def serialize(self) -> bytes:
         sn = int.to_bytes(self.sequence_number, length=1, byteorder='big')
         an = int.to_bytes(self.ack_number, length=1, byteorder='big')
         f = self.flags.serialize()
         return sn + an + f
 
     @classmethod
-    def deserialize(cls, data):
+    def deserialize(cls, data: bytes):
         sn = int.from_bytes(data[:1], byteorder='big')
         an = int.from_bytes(data[1:2], byteorder='big')
-        f = HeaderFlags.deserialize(data[3:], byteorder='big')
+        f = HeaderFlags.deserialize(data[2])
         return cls(sn, an, f)
 
 def test_HeaderFlags():
-    pass
+    packet = PacketHeader.deserialize(PacketHeader(12, 8, HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.UPLOAD, True, False, True)).serialize())
+    assert packet.sequence_number == 12
+    assert packet.ack_number == 8
+    assert packet.flags == HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.UPLOAD, True, False, True)
 
 class Packet:
     """
