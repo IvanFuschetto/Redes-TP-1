@@ -3,6 +3,8 @@ import os
 import time
 from enum import Enum
 
+import logging
+from parser import upload_parse_args
 
 HOST = "127.0.0.1"
 PORT = 5000
@@ -23,7 +25,8 @@ from protocolo import (
     make_packet,
     parse_packet,
     ERR_NONE,
-    ERRORES_DESC,
+    ERRORES_DESC, Packet, HeaderFlags,
+    MessageSynUpload
 )
 
 SERVER_HOST = "127.0.0.1"
@@ -57,7 +60,9 @@ def synchronize_with_server(sock_client,syn_pkt,server_addr):
             rtt_muestra = fin - inicio
 
             rtt_estimado= 0.875*rtt_estimado + 0.125*rtt_muestra
+            
             rtt_desviacion = 0.75*rtt_desviacion + 0.25*abs(rtt_muestra - rtt_estimado)
+
             timeout = rtt_estimado + 4*rtt_desviacion
             
             _, _, flags_byte, _ = parse_packet(data)
@@ -72,7 +77,7 @@ def synchronize_with_server(sock_client,syn_pkt,server_addr):
             contador += 1
             timeout *= 2
             continue
- 
+
 
 
 
@@ -134,23 +139,72 @@ def upload(ruta_local):
 
 
 
+# def main():
+#
+#     #sock_client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+#     #server_addr = (SERVER_HOST, SERVER_PORT)
+#
+#     operation = input("Que operacion queres hacer? (upload/download): ").strip().lower()
+#
+#     if operation == "upload":
+#         ruta = input("Ruta del archivo local a subir: ").strip()
+#         upload(ruta)
+#     elif operation == "download":
+#         nombre = input("Nombre del archivo a descargar: ").strip()
+#         hacer_download(sock, server_addr, nombre)
+#     else:
+#         print("Operacion invalida. Usa 'upload' o 'download'.")
+#
+#     #sock_client.close()
+
+def upload_stop_and_wait(server_address, source_path, dest_filename):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    if not os.path.exists(source_path):
+        raise IOError(f"El archivo de origen no existe.")
+
+    ### Start SYN
+    packet = Packet(
+        sequence_number=1,
+        ack_number=0,
+        flags=HeaderFlags(
+            type=HeaderFlags.Type.SAW,
+            operation=HeaderFlags.Operation.UPLOAD,
+            ack=False, syn=True, fin=False,
+        ),
+        payload=MessageSynUpload(
+            file_size=os.path.getsize(source_path),
+            file_name=dest_filename,
+        )
+    )
+    sock.sendto(packet, server_address)
+
+
+
 def main():
+    args = upload_parse_args()
+    logging.basicConfig(
+        level=max(logging.DEBUG, min(logging.CRITICAL, logging.WARNING + 10 * (args.quiet - args.verbose))),
+        format='%(levelname)s: %(message)s',
+    )
+    logger = logging.getLogger(__name__)
+    #logger.debug(f"Preparando transferencia de {args.src} a {args.host}:{args.port}")
+    logger.info(f"Preparando transferencia de {args.src} a {args.host}:{args.port}")
+    #logger.warning(f"Preparando transferencia de {args.src} a {args.host}:{args.port}")
+    server_address = (args.host, args.port)
+    dest_filename = args.name if args.name else os.path.basename(args.src)
+    logger.info(f"Filename: {dest_filename}")
+    try:
+        if args.protocol == "stop-and-wait":
+            upload_stop_and_wait(server_address, args.src, dest_filename)
+        elif args.protocol == "sack":
+            pass
+        else:
+            logger.critical("Protocolo incorrecto")
+    except Exception as e:
+        logger.critical(f"{e}")
 
-    #sock_client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    #server_addr = (SERVER_HOST, SERVER_PORT)
-
-    operation = input("Que operacion queres hacer? (upload/download): ").strip().lower()
-
-    if operation == "upload":
-        ruta = input("Ruta del archivo local a subir: ").strip()
-        upload(ruta)
-    elif operation == "download":
-        nombre = input("Nombre del archivo a descargar: ").strip()
-        hacer_download(sock, server_addr, nombre)
-    else:
-        print("Operacion invalida. Usa 'upload' o 'download'.")
-
-    #sock_client.close()
+    logger.info(f"Ejecución finalizada")
 
 main()
 

@@ -10,6 +10,8 @@ Header = 3 bytes
         bit 3: FIN
         bits 2-0: codigo de error (3 bits -> 0 a 7)
 """
+from email.header import Header
+from enum import Enum
 
 HEADER_SIZE = 3
 MAX_PAYLOAD = 1447
@@ -76,3 +78,134 @@ def parse_packet(data):
 
 
 
+
+class HeaderFlags:
+    class Type(Enum):
+        SAW = 0
+        SACK = 1
+
+    class Operation(Enum):
+        DOWNLOAD = 0
+        UPLOAD = 1
+
+    def __init__(self, type: Type, operation: Operation, ack: bool, syn: bool, fin: bool, error: int = 0):
+        if not isinstance(error, int) or not 0 <= error <= 7:
+            raise ValueError(f"El valor de error no es valido: {error}")
+        self.type = type
+        self.operation = operation
+        self.ack = ack
+        self.syn = syn
+        self.fin = fin
+        self.error = error
+
+    def serialize(self):
+        flags = 0
+        flags |= (self.type.value & 1) << BIT_SACK
+        flags |= (self.operation.value & 1) << BIT_UPDOWN
+        flags |= (self.ack & 1) << BIT_ACK
+        flags |= (self.syn & 1) << BIT_SYN
+        flags |= (self.fin & 1) << BIT_FIN
+        flags |= (self.error & ERROR_MASK)
+        return (flags & 0xFF).to_bytes(length=1, byteorder='big')
+
+    @classmethod
+    def deserialize(cls, flags_byte):
+        tipo = cls.Type((flags_byte >> BIT_SACK) & 1)
+        operation = cls.Operation((flags_byte >> BIT_UPDOWN) & 1)
+        ack = bool((flags_byte >> BIT_ACK) & 1)
+        syn = bool((flags_byte >> BIT_SYN) & 1)
+        fin = bool((flags_byte >> BIT_FIN) & 1)
+        error = flags_byte & ERROR_MASK
+        return cls(tipo, operation, ack, syn, fin, error)
+
+    def __eq__(self, other):
+        if not isinstance(other, HeaderFlags):
+            return False
+        return self.type == other.type and self.operation == other.operation and self.ack == other.ack and self.syn == other.syn and self.fin == other.fin and self.error == other.error
+
+
+def test_HeaderFlags_serialize():
+    assert HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.UPLOAD, True, False, True).serialize() == 0b01101000
+    assert HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.DOWNLOAD, True, False, True, 1).serialize() == 0b00101001
+    assert HeaderFlags(HeaderFlags.Type.SACK, HeaderFlags.Operation.UPLOAD, True, False, True, 3).serialize() == 0b11101011
+
+def test_HeaderFlags_deserialize():
+    assert HeaderFlags.deserialize(0b01101000) == HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.UPLOAD, True, False, True)
+    assert HeaderFlags.deserialize(0b00101001) == HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.DOWNLOAD, True, False, True, 1)
+    assert HeaderFlags.deserialize(0b11101011) == HeaderFlags(HeaderFlags.Type.SACK, HeaderFlags.Operation.UPLOAD, True, False, True, 3)
+
+
+class PacketHeader:
+    """
+    Abstracción de Encabezado de un Paquete del Protocolo RDT.
+    """
+    def __init__(self, sequence_number: int, ack_number: int, flags: HeaderFlags):
+        self.sequence_number = sequence_number
+        self.ack_number = ack_number
+        self.flags = flags
+
+    def serialize(self):
+        sn = int.to_bytes(self.sequence_number, length=1, byteorder='big')
+        an = int.to_bytes(self.ack_number, length=1, byteorder='big')
+        f = self.flags.serialize()
+        return sn + an + f
+
+    @classmethod
+    def deserialize(cls, data):
+        sn = int.from_bytes(data[:1], byteorder='big')
+        an = int.from_bytes(data[1:2], byteorder='big')
+        f = HeaderFlags.deserialize(data[3:], byteorder='big')
+        return cls(sn, an, f)
+
+def test_HeaderFlags():
+    pass
+
+class Packet:
+    """
+    Abstracción de Paquete del Protocolo RDT.
+    """
+    def __init__(self, sequence_number, ack_number, flags, payload):
+        self.header = PacketHeader(sequence_number, ack_number, flags)
+        self.payload = payload
+
+    def serialize(self):
+        return self.header.serialize() + self.payload
+    
+    @classmethod
+    def deserialize(cls, bytes):
+        header = PacketHeader.deserialize(bytes[:HEADER_SIZE])
+        payload = bytes[HEADER_SIZE:]
+        return cls(header, payload)
+
+
+
+
+
+class MessageSynUpload:
+    """
+    Abstracción de un mensaje de Sincronización para iniciar operacion UPLOAD.
+    Se informa tamaño del archivo a subir y el nombre que debe tener en el destino.
+    """
+    def __init__(self, file_size: int, file_name: str):
+        if file_size > 0xFFFFFF:
+            raise ValueError(f"Tamaño de archivo muy grande. Máximo: 15 MiB")
+        self.file_size = file_size
+        self.file_name = file_name
+
+    def serialize(self):
+        fsize = int.to_bytes(self.file_size, length=3, byteorder='big')
+        fn_len = int.to_bytes(len(self.file_name), length=1, byteorder="big")
+        fn = self.file_name.encode()
+        return fsize + fn_len + fn
+
+    @classmethod
+    def deserialize(cls, message):
+        fsize = int.from_bytes(message[:3], byteorder='big')
+        fn_len = int.from_bytes(message[3:4], byteorder='big')
+        fn = message[4:4+fn_len].decode()
+        return cls(fsize, fn)
+
+def test_MessageSynUpload():
+    message = MessageSynUpload.deserialize(MessageSynUpload(1024, "Hola.txt").serialize())
+    assert message.file_size == 1024
+    assert message.file_name == "Hola.txt"
