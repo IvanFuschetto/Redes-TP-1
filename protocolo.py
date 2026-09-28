@@ -15,6 +15,7 @@ from enum import Enum
 
 HEADER_SIZE = 3
 MAX_PAYLOAD = 1447
+MAX_PACKET_SIZE = HEADER_SIZE + MAX_PAYLOAD
 MTU = HEADER_SIZE + MAX_PAYLOAD + 20 + 8  # 20 bytes IP header + 8 bytes UDP header
 
 # posiciones de cada bit dentro del byte de flags

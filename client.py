@@ -179,8 +179,8 @@ def upload_stop_and_wait(sock, server_address, source_path, dest_filename):
         return
 
     with open(source_path, "rb") as f:
-        sequence_number += 1
         while True:
+            sequence_number += 1
             chunk = f.read(MAX_PAYLOAD)
             if not chunk:
                 break
@@ -257,7 +257,7 @@ def try_send(sock, address, packet: Packet) -> Packet:
                 respuesta = Packet.deserialize(respuesta_bytes)
                 logging.debug(f"Recibido {respuesta}")
 
-                if respuesta.flags.ack and respuesta.ack_number == ack_number_esperado:
+                if respuesta.header.flags.ack and respuesta.header.ack_number == ack_number_esperado:
                     return respuesta
 
         except socket.timeout:
