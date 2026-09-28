@@ -81,7 +81,7 @@ def synchronize_with_server(sock_client,syn_pkt,server_addr):
 
 
 
-def upload(ruta_local):
+def _upload(ruta_local):
 
     #Abrir socket UDP
     sock_client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -157,15 +157,11 @@ def upload(ruta_local):
 #
 #     #sock_client.close()
 
-def upload_stop_and_wait(server_address, source_path, dest_filename):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    if not os.path.exists(source_path):
-        raise IOError(f"El archivo de origen no existe.")
-
+def upload_stop_and_wait(sock, server_address, source_path, dest_filename):
+    sequence_number = 1
     ### Start SYN
     packet = Packet(
-        sequence_number=1,
+        sequence_number=sequence_number,
         ack_number=0,
         flags=HeaderFlags(
             type=HeaderFlags.Type.SAW,
@@ -175,9 +171,103 @@ def upload_stop_and_wait(server_address, source_path, dest_filename):
         payload=MessageSynUpload(
             file_size=os.path.getsize(source_path),
             file_name=dest_filename,
+        ).serialize()
+    )
+    respuesta = try_send(sock, server_address, packet)
+    if respuesta.header.flags.error:
+        logging.error(f"({respuesta.header.flags.error}) {ERRORES_DESC[respuesta.header.flags.error]}")
+        return
+
+    with open(source_path, "rb") as f:
+        sequence_number += 1
+        while True:
+            chunk = f.read(MAX_PAYLOAD)
+            if not chunk:
+                break
+
+            packet = Packet(
+                sequence_number=sequence_number,
+                ack_number=0,
+                flags=HeaderFlags(
+                    type=HeaderFlags.Type.SAW,
+                    operation=HeaderFlags.Operation.UPLOAD,
+                    ack=False, syn=False, fin=False,
+                ),
+                payload=chunk
+            )
+            respuesta = try_send(sock, server_address, packet)
+            if respuesta.header.flags.error:
+                logging.error(f"({respuesta.header.flags.error}) {ERRORES_DESC[respuesta.header.flags.error]}")
+                return
+
+    # Send FIN
+    packet = Packet(
+        sequence_number=sequence_number,
+        ack_number=0,
+        flags=HeaderFlags(
+            type=HeaderFlags.Type.SAW,
+            operation=HeaderFlags.Operation.UPLOAD,
+            ack=False, syn=False, fin=True,
         )
     )
-    sock.sendto(packet, server_address)
+    respuesta = try_send(sock, server_address, packet)
+    if respuesta.header.flags.error:
+        logging.error(f"({respuesta.header.flags.error}) {ERRORES_DESC[respuesta.header.flags.error]}")
+        return
+
+def upload(server_address, protocol, source_path, dest_filename):
+    logging.getLogger(__name__)
+
+    if not os.path.exists(source_path):
+        raise IOError(f"El archivo de origen no existe.")
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    try:
+        match protocol:
+            case HeaderFlags.Type.SAW:
+                upload_stop_and_wait(sock, server_address, source_path, dest_filename)
+            case HeaderFlags.Type.SACK:
+                raise NotImplementedError("Protocolo SACK no implementado.")
+            case _:
+                raise ValueError(f"Protocolo {protocol} no implementado.")
+    except Exception as e:
+        sock.close()
+        raise e
+
+
+def try_send(sock, address, packet: Packet) -> Packet:
+    """
+    Intenta y reintenta enviar el `packet` a través de `sock` a `address`.
+    Devuelve el Packet recibido.
+    """
+
+    timeout = 1
+    sock.settimeout(timeout)
+
+    timeout_cont = 0
+    while timeout_cont < 5:
+        try:
+            ack_number_esperado = packet.header.sequence_number
+            sock.sendto(packet.serialize(), address)
+            logging.debug(f"Enviando {packet}")
+
+            while True:
+                respuesta_bytes, _ = sock.recvfrom(HEADER_SIZE + MAX_PAYLOAD)
+                respuesta = Packet.deserialize(respuesta_bytes)
+                logging.debug(f"Recibido {respuesta}")
+
+                if respuesta.flags.ack and respuesta.ack_number == ack_number_esperado:
+                    return respuesta
+
+        except socket.timeout:
+            logging.debug(f"Timeout {packet}")
+            timeout_cont += 1
+            timeout *= 2
+            sock.settimeout(timeout)
+            continue
+
+    raise TimeoutError("Error de Conexión ! Demasiados Timeouts")
 
 
 
@@ -194,13 +284,17 @@ def main():
     server_address = (args.host, args.port)
     dest_filename = args.name if args.name else os.path.basename(args.src)
     logger.info(f"Filename: {dest_filename}")
+
+    if args.protocol == "stop-and-wait":
+        protocol = HeaderFlags.Type.SAW
+    elif args.protocol == "sack":
+        protocol = HeaderFlags.Type.SACK
+    else:
+        logger.critical(f"Protocolo incorrecto: {args.protocol}")
+        return
+
     try:
-        if args.protocol == "stop-and-wait":
-            upload_stop_and_wait(server_address, args.src, dest_filename)
-        elif args.protocol == "sack":
-            pass
-        else:
-            logger.critical("Protocolo incorrecto")
+        upload(server_address, protocol, args.src, dest_filename)
     except Exception as e:
         logger.critical(f"{e}")
 

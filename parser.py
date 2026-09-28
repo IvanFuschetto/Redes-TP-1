@@ -43,3 +43,29 @@ def upload_parse_args():
         help="error recovery protocol",
     )
     return parser.parse_args()
+
+def server_parse_args():
+    parser = argparse.ArgumentParser(
+        prog="start-server", formatter_class=CustomFormatter
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="count", default=0,
+        help="increase output verbosity"
+    )
+    parser.add_argument(
+        "-q", "--quiet", action="count", default=0,
+        help="decrease output verbosity"
+    )
+    parser.add_argument(
+        "-H", "--host", default="10.0.0.1",
+        help="server IP address"
+    )
+    parser.add_argument(
+        "-p", "--port", type=int, default=12345,
+        help="server port"
+    )
+    parser.add_argument(
+        "-s", "--storage", required=True, metavar="DIRPATH",
+        help="source file path"
+    )
+    return parser.parse_args()
