@@ -125,6 +125,7 @@ def upload_saw_client_handler(sock, address, queue: Queue, storage_path, stop_ev
                     if file is not None and not file.closed:
                         file.close()
                     last_sequence_number_sent += 1
+                    last_sequence_number_sent = last_sequence_number_sent if last_sequence_number_sent < 256 else last_sequence_number_sent - 256
                     last_sequence_number_received = packet_received.header.sequence_number
                     packet = Packet(
                         last_sequence_number_sent,
@@ -139,6 +140,7 @@ def upload_saw_client_handler(sock, address, queue: Queue, storage_path, stop_ev
                 # OTRO CASO
                 else:
                     expected_sequence_number_received = last_sequence_number_received + 1
+                    expected_sequence_number_received = expected_sequence_number_received if expected_sequence_number_received < 256 else expected_sequence_number_received - 256
                     if not expected_sequence_number_received == packet_received.header.sequence_number:
                         # Estoy recibiendo un paquete que no espero (o ya lo recibí, o se perdió uno)
                         # Reenvío el último paquete enviado
@@ -156,6 +158,7 @@ def upload_saw_client_handler(sock, address, queue: Queue, storage_path, stop_ev
                         error_code = 7 # Error inesperado
 
                     last_sequence_number_sent += 1
+                    last_sequence_number_sent = last_sequence_number_sent if last_sequence_number_sent < 256 else last_sequence_number_sent - 256
                     last_sequence_number_received = packet_received.header.sequence_number
                     packet = Packet(
                         last_sequence_number_sent,

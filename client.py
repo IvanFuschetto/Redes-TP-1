@@ -181,6 +181,7 @@ def upload_stop_and_wait(sock, server_address, source_path, dest_filename):
     with open(source_path, "rb") as f:
         while True:
             sequence_number += 1
+            sequence_number = sequence_number if sequence_number < 256 else sequence_number - 256
             chunk = f.read(MAX_PAYLOAD)
             if not chunk:
                 break
