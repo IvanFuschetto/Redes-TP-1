@@ -7,7 +7,7 @@ from queue import Queue, Empty
 
 from parser import server_parse_args
 from protocolo import Packet, MessageSynUpload, HeaderFlags, MAX_PACKET_SIZE, ERR_FILE_TOO_BIG, ERR_FILE_EXISTS, \
-    ERRORES_DESC
+    ERRORES_DESC, MTU
 
 MAX_FILE_SIZE = 15 * 1024 * 1024
 
@@ -33,8 +33,21 @@ def main():
 
     try:
         while True:
+
+            #Limpiar threads que ya terminaron
+            for address in list(conexiones.keys()):
+                queue, thread = conexiones[address]
+
+                if not thread.is_alive():
+                    thread.join()
+                    del conexiones[address]
+
+                    logger.debug(
+                        f"Conexión de {address} eliminada"
+                    )
+
             try:
-                packet_bytes, address = sock.recvfrom(MAX_PACKET_SIZE)
+                packet_bytes, address = sock.recvfrom(MTU)
                 packet = Packet.deserialize(packet_bytes)
 
                 if not address in conexiones:
@@ -47,7 +60,10 @@ def main():
                             logger.warning(f"Recibido SYN de {address} con tipo/operación no soportados: {packet.header.flags.type.name}/{packet.header.flags.operation.name}")
                             continue
                         thread.start()
+
                         conexiones[address] = (queue, thread)
+
+                        queue.put(packet)
                     else:
                         logger.debug(f"Recibido SIN SYN de {address}: {packet}")
                 else:
@@ -97,7 +113,7 @@ def upload_saw_client_handler(sock, address, queue: Queue, storage_path, stop_ev
                         last_sequence_number_received = packet_received.header.sequence_number
                         message = MessageSynUpload.deserialize(packet_received.payload)
                         file_size = message.file_size
-                        file_path = os.path.join(storage_path, message.file_name)
+                        file_path = os.path.join("storage", message.file_name)
                         error = validar_upload(file_size, file_path)
 
                         last_sequence_number_sent = 1
@@ -124,18 +140,20 @@ def upload_saw_client_handler(sock, address, queue: Queue, storage_path, stop_ev
                 elif packet_received.header.flags.fin:
                     if file is not None and not file.closed:
                         file.close()
-                    last_sequence_number_sent += 1
-                    last_sequence_number_sent = last_sequence_number_sent if last_sequence_number_sent < 256 else last_sequence_number_sent - 256
-                    last_sequence_number_received = packet_received.header.sequence_number
-                    packet = Packet(
-                        last_sequence_number_sent,
-                        last_sequence_number_received,
-                        HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.UPLOAD, ack=True, syn=False, fin=True),
-                    )
-                    last_packet_sent = packet
+                        last_sequence_number_sent += 1
+                        last_sequence_number_sent = last_sequence_number_sent if last_sequence_number_sent < 256 else last_sequence_number_sent - 256
+                        last_sequence_number_received = packet_received.header.sequence_number
+                        packet = Packet(
+                            last_sequence_number_sent,
+                            last_sequence_number_received,
+                            HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.UPLOAD, ack=True, syn=False, fin=True),
+                        )
+                        last_packet_sent = packet
+
                     sock.sendto(packet.serialize(), address)
                     logging.info(f"Transferencia de {address} finalizada exitosamente")
-                    break
+                    #NO debido a que se pude perder este ack de fin y el cliente se queda esperando. Se cierra el archivo y se termina el hilo, pero no se hace break para que pueda reintentar el cliente
+                    #break
 
                 # OTRO CASO
                 else:
@@ -173,7 +191,7 @@ def upload_saw_client_handler(sock, address, queue: Queue, storage_path, stop_ev
 
             except Empty:
                 logging.debug(f"Queue Timeout en client handler de {address}")
-                continue
+                break
 
             except ValueError as e:
                 logging.warning(f"{e}")
