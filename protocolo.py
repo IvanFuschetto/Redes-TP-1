@@ -15,6 +15,7 @@ from enum import Enum
 
 HEADER_SIZE = 3
 MAX_PAYLOAD = 1447
+MAX_PACKET_SIZE = HEADER_SIZE + MAX_PAYLOAD
 MTU = HEADER_SIZE + MAX_PAYLOAD + 20 + 8  # 20 bytes IP header + 8 bytes UDP header
 
 # posiciones de cada bit dentro del byte de flags
@@ -123,6 +124,9 @@ class HeaderFlags:
             return False
         return self.type == other.type and self.operation == other.operation and self.ack == other.ack and self.syn == other.syn and self.fin == other.fin and self.error == other.error
 
+    def __str__(self):
+        return f"(TY={self.type.name},OP={self.operation.name[0]},ACK={int(self.ack)},SYN={int(self.syn)},FIN={int(self.fin)},ERR={self.error})"
+
 
 def test_HeaderFlags_serialize():
     assert HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.UPLOAD, True, False, True).serialize() == 0b01101000.to_bytes(length=1, byteorder='big')
@@ -167,19 +171,23 @@ class Packet:
     """
     Abstracción de Paquete del Protocolo RDT.
     """
-    def __init__(self, sequence_number, ack_number, flags, payload):
+    def __init__(self, sequence_number, ack_number, flags, payload=None):
         self.header = PacketHeader(sequence_number, ack_number, flags)
         self.payload = payload
 
     def serialize(self):
+        if self.payload is None:
+            return self.header.serialize()
         return self.header.serialize() + self.payload
     
     @classmethod
-    def deserialize(cls, bytes):
-        header = PacketHeader.deserialize(bytes[:HEADER_SIZE])
-        payload = bytes[HEADER_SIZE:]
-        return cls(header, payload)
+    def deserialize(cls, packet_bytes):
+        header = PacketHeader.deserialize(packet_bytes[:HEADER_SIZE])
+        payload = packet_bytes[HEADER_SIZE:]
+        return cls(header.sequence_number, header.ack_number, header.flags, payload)
 
+    def __str__(self):
+        return f"[SN={self.header.sequence_number},ACKN={self.header.ack_number},{self.header.flags}]"
 
 
 
