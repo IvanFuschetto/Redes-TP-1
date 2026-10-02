@@ -220,3 +220,98 @@ def test_MessageSynUpload():
     message = MessageSynUpload.deserialize(MessageSynUpload(1024, "Hola.txt").serialize())
     assert message.file_size == 1024
     assert message.file_name == "Hola.txt"
+
+
+
+
+
+class SackPayload:
+    """
+    Estructura del payload para paquetes ACK con información SACK.
+    Formato en bytes:
+      - Byte 0: Cantidad de bloques (N)
+      - Bytes siguientes: N pares de (start, end)
+    """
+    def __init__(self, blocks: list[tuple[int, int]] = None):
+        self.blocks = blocks if blocks is not None else []
+
+    def serialize(self) -> bytes:
+        out = bytearray([len(self.blocks) & 0xFF])
+        for start, end in self.blocks:
+            out.append(start & 0xFF)
+            out.append(end & 0xFF)
+        return bytes(out)
+
+    @classmethod
+    def deserialize(cls, data: bytes):
+        if not data or len(data) < 1:
+            return cls([])
+        
+        num_blocks = data[0]
+        blocks = []
+        payload_data = data[1:]
+        
+        for i in range(num_blocks):
+            start_idx = i * 2
+            end_idx = start_idx + 2
+            if end_idx <= len(payload_data):
+                start = payload_data[start_idx]
+                end = payload_data[start_idx + 1]
+                blocks.append((start, end))
+                
+        return cls(blocks)
+
+    def __repr__(self):
+        ranges = [f"[{s}-{e}]" for s, e in self.blocks]
+        return f"SACK={ranges}"
+
+
+def compute_sack_blocks(out_of_order_seqs: set[int], rcv_nxt: int) -> list[tuple[int, int]]:
+    """
+    Agrupa los paquetes fuera de orden en bloques contiguos [start, end],
+    ordenados según la distancia circular respecto a rcv_nxt.
+    """
+    if not out_of_order_seqs:
+        return []
+
+    # Ordenar por distancia circular desde rcv_nxt para manejar correctamente el paso de 255 a 0
+    sorted_seqs = sorted(out_of_order_seqs, key=lambda seq: (seq - rcv_nxt) % 256)
+
+    blocks = []
+    start = sorted_seqs[0]
+    end = start
+
+    for seq in sorted_seqs[1:]:
+        if seq == (end + 1) % 256:
+            end = seq
+        else:
+            blocks.append((start, end))
+            start = seq
+            end = seq
+
+    blocks.append((start, end))
+    return blocks
+
+
+
+
+
+
+MAX_SEQ = 256
+
+class SequenceNumber:
+    """Maneja la aritmética circular de los números de secuencia (0 a 255)."""
+    
+    @staticmethod
+    def next_seq(seq: int) -> int:
+        return (seq + 1) % MAX_SEQ
+
+    @staticmethod
+    def distance(a: int, b: int) -> int:
+        """Calcula la distancia circular (a - b) mod 256."""
+        return (a - b) % MAX_SEQ
+
+    @staticmethod
+    def is_in_window(seq: int, base: int, window_size: int) -> bool:
+        """Verifica si seq pertenece al rango [base, base + window_size - 1]."""
+        return SequenceNumber.distance(seq, base) < window_size
