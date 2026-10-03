@@ -7,7 +7,8 @@ from queue import Queue, Empty
 
 from parser import server_parse_args
 from protocolo import Packet, MessageSynUpload, HeaderFlags, MAX_PACKET_SIZE, ERR_FILE_TOO_BIG, ERR_FILE_EXISTS, \
-    ERRORES_DESC, MTU
+    ERRORES_DESC, MTU, ERR_NONE, ERR_UNEXPECTED, MAX_SEQ, SACK_WINDOW_SIZE, SequenceNumber, SackPayload, \
+    compute_sack_blocks
 
 MAX_FILE_SIZE = 15 * 1024 * 1024
 
@@ -56,6 +57,8 @@ def main():
                         queue = Queue()
                         if packet.header.flags.type == HeaderFlags.Type.SAW and packet.header.flags.operation == HeaderFlags.Operation.UPLOAD:
                             thread = threading.Thread(target=upload_saw_client_handler, args=(sock, address, queue, args.storage, stop_event))
+                        elif packet.header.flags.type == HeaderFlags.Type.SACK and packet.header.flags.operation == HeaderFlags.Operation.UPLOAD:
+                            thread = threading.Thread(target=upload_sack_client_handler, args=(sock, address, queue, args.storage, stop_event))
                         else:
                             logger.warning(f"Recibido SYN de {address} con tipo/operación no soportados: {packet.header.flags.type.name}/{packet.header.flags.operation.name}")
                             continue
@@ -210,126 +213,165 @@ def validar_upload(file_size, file_path):
 
 
 
-
-
-import os
-
-MAX_SEQ = 256
-
 class ServerUploadSession:
-    def __init__(self, sock, client_addr, file_name: str, file_size: int):
+    """
+    Receptor SACK (Selective Repeat) de un UPLOAD.
+    Los datos en orden se escriben directo al archivo; los fuera de orden se guardan
+    en un buffer hasta que se llene el hueco, y se informan al cliente en bloques SACK.
+    """
+    def __init__(self, sock, client_addr, file_path: str, file_size: int, first_seq: int):
         self.sock = sock
         self.client_addr = client_addr
-        self.file_name = file_name
+        self.file_path = file_path
         self.file_size = file_size
-        
-        # Estado del protocolo
-        self.rcv_nxt = 0                    # Próximo SEQ esperado (0 a 255)
-        self.received_out_of_order = set()  # SEQs fuera de orden presentes en la ventana activa
-        
-        # Manejo de vueltas circulares (Wrap-around)
-        self.base_chunk_index = 0           # Índice absoluto del paquete rcv_nxt (0, 1, 2, ..., 300...)
-        
-        # Buffer de chunks recibidos: chunk_index_absoluto -> bytes
-        self.buffer = {}                    
-        self.bytes_written = 0
-        self.is_finished = False
 
-    def _seq_to_absolute_index(self, seq: int) -> int:
-        """
-        Convierte un número de secuencia circular (0-255) a su índice absoluto
-        de paquete basado en la posición de rcv_nxt/base_chunk_index.
-        """
-        # Distancia circular hacia adelante desde rcv_nxt
-        diff = (seq - self.rcv_nxt) % MAX_SEQ
-        return self.base_chunk_index + diff
+        # Estado del protocolo
+        self.rcv_nxt = first_seq                       # Próximo SEQ esperado (0 a 255)
+        self.out_of_order: dict[int, bytes] = {}       # SEQ -> payload recibido fuera de orden (dentro de la ventana)
+
+        self.bytes_written = 0
+        self.error = ERR_NONE
+        self.file = open(file_path, "wb")
 
     def process_packet(self, packet: Packet):
         seq = packet.header.sequence_number
         payload = packet.payload or b""
 
-        # CASO 1: Paquete duplicado o viejo (ya fue superado por rcv_nxt)
-        if seq != self.rcv_nxt and ((self.rcv_nxt - seq) % MAX_SEQ) < 128 and seq not in self.received_out_of_order:
-            self.send_ack()
-            return
+        # CASO 1: Paquete esperado -> se escribe y se avanza con lo que ya estaba en el buffer
+        if seq == self.rcv_nxt:
+            self._write(payload)
+            self.rcv_nxt = SequenceNumber.next_seq(self.rcv_nxt)
+            while self.rcv_nxt in self.out_of_order:
+                self._write(self.out_of_order.pop(self.rcv_nxt))
+                self.rcv_nxt = SequenceNumber.next_seq(self.rcv_nxt)
 
-        # Calcular el índice absoluto del chunk (soporta N vueltas al módulo 256)
-        abs_index = self._seq_to_absolute_index(seq)
+        # CASO 2: Paquete fuera de orden dentro de la ventana (deja un hueco)
+        elif SequenceNumber.is_in_window(seq, self.rcv_nxt, SACK_WINDOW_SIZE):
+            self.out_of_order.setdefault(seq, payload)
 
-        # CASO 2: Paquete fuera de orden (deja un hueco)
-        if seq != self.rcv_nxt:
-            if seq not in self.received_out_of_order:
-                self.received_out_of_order.add(seq)
-                self.buffer[abs_index] = payload
-            self.send_ack()
-            return
-
-        # CASO 3: Paquete esperado (seq == self.rcv_nxt)
-        self.buffer[abs_index] = payload
-        
-        # Avanzar el puntero esperado y el índice absoluto
-        self.rcv_nxt = (self.rcv_nxt + 1) % MAX_SEQ
-        self.base_chunk_index += 1
-
-        # Avanzar la ventana acumulativa si ya teníamos guardados los siguientes paquetes en SACK
-        while self.rcv_nxt in self.received_out_of_order:
-            self.received_out_of_order.remove(self.rcv_nxt)
-            self.rcv_nxt = (self.rcv_nxt + 1) % MAX_SEQ
-            self.base_chunk_index += 1
-
-        # Verificar si completamos todos los bytes del archivo
-        current_data_size = sum(len(b) for b in self.buffer.values())
-        if current_data_size >= self.file_size:
-            self.is_finished = True
-            self.save_file()
+        # CASO 3: Paquete duplicado o viejo (ya fue superado por rcv_nxt) -> solo se reenvía el ACK
 
         self.send_ack()
 
+    def _write(self, data: bytes):
+        if self.error:
+            return
+        try:
+            self.file.write(data)
+            self.bytes_written += len(data)
+        except Exception as e:
+            logging.error(f"{self.client_addr}: Error al escribir en el archivo {self.file_path}: {e}")
+            self.error = ERR_UNEXPECTED
+
     def send_ack(self):
-        """Construye y envía el ACK/SACK."""
+        """Construye y envía el ACK acumulativo (último SEQ en orden) con los bloques SACK."""
         flags = HeaderFlags(
             type=HeaderFlags.Type.SACK,
             operation=HeaderFlags.Operation.UPLOAD,
             ack=True,
             syn=False,
-            fin=self.is_finished,
-            error=ERR_NONE
+            fin=False,
+            error=self.error
         )
-        
-        sack_blocks = compute_sack_blocks(self.received_out_of_order, self.rcv_nxt)
+
+        sack_blocks = compute_sack_blocks(set(self.out_of_order), self.rcv_nxt)
         sack_payload = SackPayload(sack_blocks).serialize()
-        
-        ack_num = (self.rcv_nxt - 1) % MAX_SEQ
-        
+
         ack_packet = Packet(
             sequence_number=0,
-            ack_number=ack_num,
+            ack_number=(self.rcv_nxt - 1) % MAX_SEQ,
             flags=flags,
             payload=sack_payload
         )
         self.sock.sendto(ack_packet.serialize(), self.client_addr)
 
-    def save_file(self):
-        """Escribe los datos ordenados del buffer en disco usando los índices absolutos."""
-        with open(self.file_name, "wb") as f:
-            # Iterar e incorporar los paquetes ordenados de 0 a N
-            for abs_idx in range(len(self.buffer)):
-                f.write(self.buffer[abs_idx])
-        print(f"[SERVIDOR] Archivo '{self.file_name}' guardado correctamente ({len(self.buffer)} chunks).")
+    def is_complete(self) -> bool:
+        return not self.error and self.bytes_written == self.file_size and not self.out_of_order
+
+    def close(self, keep_file: bool):
+        if not self.file.closed:
+            self.file.close()
+        if not keep_file and os.path.exists(self.file_path):
+            # Transferencia incompleta: se borra el archivo parcial para permitir reintentar
+            os.remove(self.file_path)
 
 
+def upload_sack_client_handler(sock, address, queue: Queue, storage_path, stop_event: threading.Event):
+    session: ServerUploadSession | None = None
+    syn_ack_packet = None
+    fin_ack_packet = None
 
+    try:
+        while not stop_event.is_set():
+            try:
+                packet_received: Packet = queue.get(block=True, timeout=10)
 
+                # Validación de PROTOCOLO y OPERACIÓN consistentes
+                if packet_received.header.flags.type != HeaderFlags.Type.SACK:
+                    raise ValueError(f"Protocolo alterado: Recibido de {address}: {packet_received} con protocolo alterado: {packet_received.header.flags.type.name} en lugar de {HeaderFlags.Type.SACK.name}")
+                if packet_received.header.flags.operation != HeaderFlags.Operation.UPLOAD:
+                    raise ValueError(f"Operación alterada: Recibido de {address}: {packet_received} con operación alterada: {packet_received.header.flags.operation.name} en lugar de {HeaderFlags.Operation.UPLOAD.name}")
 
+                # SYN RECEIVED
+                if packet_received.header.flags.syn:
+                    if syn_ack_packet is None:
+                        message = MessageSynUpload.deserialize(packet_received.payload)
+                        file_path = os.path.join("storage", message.file_name)
+                        error = validar_upload(message.file_size, file_path)
 
+                        syn_ack_packet = Packet(
+                            0,
+                            packet_received.header.sequence_number,
+                            HeaderFlags(HeaderFlags.Type.SACK, HeaderFlags.Operation.UPLOAD, ack=True, syn=True, fin=False, error=error),
+                        )
+                        if error:
+                            logging.warning(f"Error al intentar recibir: {file_path}. ({error}) {ERRORES_DESC[error]}")
+                        else:
+                            first_seq = SequenceNumber.next_seq(packet_received.header.sequence_number)
+                            session = ServerUploadSession(sock, address, file_path, message.file_size, first_seq)
 
+                    # Si ya se recibió el SYN, se reenvía la misma respuesta
+                    sock.sendto(syn_ack_packet.serialize(), address)
+                    if syn_ack_packet.header.flags.error:
+                        break
 
+                # FIN RECEIVED
+                elif packet_received.header.flags.fin:
+                    if session is None:
+                        continue
+                    if fin_ack_packet is None:
+                        if packet_received.header.sequence_number != session.rcv_nxt or not session.is_complete():
+                            # Faltan datos: se responde con el ACK/SACK actual para que el cliente retransmita
+                            logging.warning(f"FIN de {address} con transferencia incompleta ({session.bytes_written}/{session.file_size} bytes)")
+                            session.send_ack()
+                            continue
+                        session.close(keep_file=True)
+                        fin_ack_packet = Packet(
+                            0,
+                            packet_received.header.sequence_number,
+                            HeaderFlags(HeaderFlags.Type.SACK, HeaderFlags.Operation.UPLOAD, ack=True, syn=False, fin=True),
+                        )
+                        logging.info(f"Transferencia de {address} finalizada exitosamente")
 
+                    # Se reenvía si el cliente repite el FIN (se perdió el FIN-ACK). No se hace break por eso mismo
+                    sock.sendto(fin_ack_packet.serialize(), address)
 
+                # DATOS
+                else:
+                    if session is None or fin_ack_packet is not None:
+                        continue
+                    session.process_packet(packet_received)
 
+            except Empty:
+                logging.debug(f"Queue Timeout en client handler de {address}")
+                break
 
+            except ValueError as e:
+                logging.warning(f"{e}")
 
-
+    finally:
+        if session is not None:
+            session.close(keep_file=fin_ack_packet is not None)
 
 
 if __name__ == "__main__":

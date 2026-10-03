@@ -31,12 +31,14 @@ ERR_NONE = 0
 ERR_INVALID_NAME = 1
 ERR_FILE_EXISTS = 2
 ERR_FILE_TOO_BIG = 3
- 
+ERR_UNEXPECTED = 7
+
 ERRORES_DESC = {
     ERR_NONE: "sin error",
     ERR_INVALID_NAME: "nombre de archivo invalido",
     ERR_FILE_EXISTS: "el archivo ya existe en el servidor",
     ERR_FILE_TOO_BIG: "el archivo es demasiado grande",
+    ERR_UNEXPECTED: "error inesperado en el servidor",
 }
  
  
@@ -298,6 +300,8 @@ def compute_sack_blocks(out_of_order_seqs: set[int], rcv_nxt: int) -> list[tuple
 
 
 MAX_SEQ = 256
+# Tamaño de ventana de SACK (Selective Repeat). Debe ser <= MAX_SEQ / 2
+SACK_WINDOW_SIZE = 16
 
 class SequenceNumber:
     """Maneja la aritmética circular de los números de secuencia (0 a 255)."""
