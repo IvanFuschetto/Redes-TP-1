@@ -154,32 +154,58 @@ def try_send(sock, address, packet: Packet) -> Packet:
     raise TimeoutError("Error de Conexión ! Demasiados Timeouts")
 
 class SackSenderClient:
-    def __init__(self, sock: socket.socket, server_addr: tuple, window_size: int = 4, timeout: float = 0.5):
+    def __init__(self, sock: socket.socket, server_addr: tuple,base:int,next_seq:int ,timeout: float,window_size: int = 4):
         self.sock = sock
         self.server_addr = server_addr
         self.window_size = window_size
         self.timeout = timeout
 
         # Estado de la ventana
-        self.base = 0                               # SEQ del paquete más antiguo pendiente de ACK
-        self.next_seq = 0                           # Próximo SEQ libre para asignar a un nuevo paquete
+        self.base = base                               # SEQ del paquete más antiguo pendiente de ACK
+        self.next_seq =  next_seq                     # Próximo SEQ libre para asignar a un nuevo paquete
         self.unacked_packets: dict[int, Packet] = {} # seq -> Packet enviado pendiente
         self.sacked_seqs: set[int] = set()           # SEQs informados en bloques SACK (para saber qué no retransmitir)
+
+
+        self.rtt_muestra: float | None = None
+
+        #valores semilla
+        self.rtt_estimado: float = 1.0
+        self.rtt_desviacion: float = 0.25
+
+
 
         # Control de Retransmisión Rápida (Fast Retransmit)
         self.last_ack_num: int | None = None
         self.dup_ack_count: int = 0
 
         # Timer único asociado al paquete 'base'
-        self.timer_start: float | None = None
+        self.deadline = None
+        self.base_retransmited = False
 
+
+    def _set_remaining_timeout(self):
+        
+        #no tednria que pasar pero por las dudas
+        if self.deadline is None:
+            return
+
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            remaining = 0.001
+        self.sock.settimeout(remaining)
+
+    def _restart_deadline(self):
+        self.deadline = time.monotonic() + self.timeout
+        self._set_remaining_timeout()
 
 
     def send_file_chunks(self, chunks: list[bytes]):
         chunk_idx = 0
         total_chunks = len(chunks)
 
-        self.sock.settimeout(0.02)
+        # reeincio antes de enviar la ventana entonces ahi ya tengoel timeout actualizado y nunca va a ser none
+        self._restart_deadline()
 
         while chunk_idx < total_chunks or len(self.unacked_packets) > 0: #Vamos a enviar paquetes mientras haya chunks por enviar o paquetes pendientes de ACK
 
@@ -214,14 +240,9 @@ class SackSenderClient:
                 print(f"[CLIENTE] Enviado SEQ={self.next_seq} (Chunk {chunk_idx + 1}/{total_chunks})")
 
 
-                #Ignorar por ahora los timers
-                if self.timer_start is None:
-                    self.timer_start = time.time()
-
                 #Suma en 1 el numero de sequencia y si el mayor a 256 lo mapea en el circulo (Ej 256 va a ser ns= 0) SIempre mantiene forma circular
                 self.next_seq = SequenceNumber.next_seq(self.next_seq)
                 
-                #Hay que avanzar los chunks(A checkear)
                 chunk_idx += 1
 
 
@@ -236,13 +257,14 @@ class SackSenderClient:
                 if ack_packet.header.flags.ack:
                     self._handle_ack_response(ack_packet)
 
-            except (socket.timeout, BlockingIOError):
+            except  BlockingIOError:
                 pass
 
-
-            # 3. VERIFICAR TIMEOUT (Paquete base)
-            if self.timer_start is not None and (time.time() - self.timer_start > self.timeout):
+            except socket.timeout:
                 self._handle_timeout()
+            except Exception:
+                continue
+
 
         print("[CLIENTE] Transferencia completada con éxito.")
 
@@ -272,8 +294,14 @@ class SackSenderClient:
             # Disparo de Retransmisión Rápida (Fast Retransmit)
             if self.dup_ack_count == 3:
                 print(f"[CLIENTE] ¡3 ACKs duplicados! Fast Retransmit sobre SEQ base={self.base}")
-                self._retransmit_base()
+                self._retransmit_base_tres_dup_ack()
                 self.dup_ack_count = 0  # Reiniciar contador tras retransmitir
+                self.base_retransmited = True  # Marcar que la base fue retransmitida
+        # Habria que analizar que pasa si me llega un paquete con delay de un ack que ya fue confirmado y que ya fue descartado de la ventana. En ese caso no deberia hacer nada.
+        elif SequenceNumber.is_in_window(ack_num, self.base, self.window_size) == False:
+            print(f"[CLIENTE] ACK fuera de ventana recibido -> ACK={ack_num}. Ignorando.")
+            self._set_remaining_timeout() 
+            #Habria que checkear el timepo transcurrido y actualizarlo en la proximo recvfrom
 
         else:
             # CASO ACK NUEVO (Avanza la ventana) 
@@ -289,16 +317,23 @@ class SackSenderClient:
                     if curr == ack_num:
                         break
                     curr = SequenceNumber.next_seq(curr)
-
                 # Avanzar la base de la ventana
                 self.base = SequenceNumber.next_seq(ack_num)
                 print(f"[CLIENTE] ACK nuevo recibido={ack_num}. Nueva base={self.base}")
 
-                # Reiniciar/Apagar Timer
-                if len(self.unacked_packets) > 0:
-                    self.timer_start = time.time()
+                if self.base_retransmited:
+                    print(f"[CLIENTE] Base retransmitida previamente. Reiniciando timer.")
+                    self.base_retransmited = False
+                    self._restart_deadline()
                 else:
-                    self.timer_start = None
+                    #formilas (se usan cuando llega un ack limpio sin repetidos antes) 
+                    self.rtt_muestra = self.timeout - (self.deadline - time.monotonic())
+                    self.rtt_estimado = 0.875*self.rtt_estimado + 0.125*self.rtt_muestra 
+                    self.rtt_desviacion = 0.75*self.rtt_desviacion + 0.25*abs(self.rtt_muestra - self.rtt_estimado)
+                    self.timeout = self.rtt_estimado + 4*self.rtt_desviacion
+                    self._restart_deadline()
+                    #tiempo restante = timeout
+                    #self.timing_t_interval =  # Reiniciar el timer para la nueva base
 
     def _retransmit_base(self):
         """Auxiliar para retransmitir únicamente el paquete retenido en 'base'."""
@@ -306,20 +341,74 @@ class SackSenderClient:
             packet_to_resend = self.unacked_packets[self.base]
             self.sock.sendto(packet_to_resend.serialize(), self.server_addr)
             # Reiniciar timer sobre el paquete recién retransmitido
-            self.timer_start = time.time()
+            self.base_retransmited = True 
+            self._restart_deadline()
 
     def _handle_timeout(self):
         """Retransmisión por vencimiento de Timer de seguridad."""
         print(f"[CLIENTE] Timeout vencido. Retransmitiendo base SEQ={self.base}")
-        self.dup_ack_count = 0  # Resetear contador al disparar timeout
+        # Agrando el doble la ventana de fin de temporizacion para el siguiente timeout
+        self.timeout *= 2
         self._retransmit_base()
 
+    def _retransmit_base_tres_dup_ack(self):
+        if self.base in self.unacked_packets:
+            packet_to_resend = self.unacked_packets[self.base]
+            self.sock.sendto(packet_to_resend.serialize(), self.server_addr)
+            # Reiniciar timer sobre el paquete recién retransmitido
+            self.base_retransmited = True 
+            self._set_remaining_timeout()
 
 
 
+def stage_fin(sock, address, packet: Packet):
+    """
+    Envía un paquete FIN y espera la respuesta.
+    Devuelve el Packet recibido.
+    """
 
+    timeout = 1
+    timeout_cont = 0
+    while timeout_cont < 5:
+        try:
+            ack_number_esperado = packet.header.sequence_number
+            
+            sock.settimeout(timeout)
+            
+            sock.sendto(packet.serialize(), address)
+            
+            logging.debug(f"Enviando {packet}")
 
+            tiempo_inicio = time.monotonic()
+            while True:
 
+                # Calculamos cuánto tiempo queda del timeout
+                tiempo_transcurrido = time.monotonic() - tiempo_inicio
+                tiempo_restante = timeout - tiempo_transcurrido
+
+                if tiempo_restante <= 0:
+                    raise socket.timeout
+
+                sock.settimeout(tiempo_restante)
+
+                respuesta_bytes, _ = sock.recvfrom(MTU)
+                respuesta = Packet.deserialize(respuesta_bytes)
+
+                logging.debug(f"Recibido {respuesta}")
+                
+                # CASO FIN QUIERO VER FLAG ACK =TRUE  , FIN = 1 
+                if respuesta.header.flags.ack and respuesta.header.flags.fin and respuesta.header.ack_number == ack_number_esperado:
+                    return (timeout,respuesta)
+
+                # Llegó algo que no nos interesa.
+                # Seguimos esperando, pero SIN reiniciar el timeout.
+        except socket.timeout:
+            logging.debug(f"Timeout {packet}")
+            timeout_cont += 1
+            timeout *= 2
+            continue
+
+    raise TimeoutError("Error de Conexión ! Demasiados Timeouts")
 
 
 def stage_syn(sock, address, packet: Packet):
@@ -370,6 +459,68 @@ def stage_syn(sock, address, packet: Packet):
             continue
 
     raise TimeoutError("Error de Conexión ! Demasiados Timeouts")
+
+
+
+
+def upload_sack(sock, server_address, source_path, dest_filename):
+    
+    sequence_number = 0
+
+    ### Start SYN
+    packet = Packet(
+        sequence_number=sequence_number,
+        ack_number=0,
+        flags=HeaderFlags(
+            type=HeaderFlags.Type.SACK,
+            operation=HeaderFlags.Operation.UPLOAD,
+            ack=False, syn=True, fin=False,
+        ),
+        payload=MessageSynUpload(
+            file_size=os.path.getsize(source_path),
+            file_name=dest_filename,
+        ).serialize()
+    )
+
+    timeout,respuesta = stage_syn(sock, server_address, packet)
+    if respuesta.header.flags.error:
+        logging.error(f"({respuesta.header.flags.error}) {ERRORES_DESC[respuesta.header.flags.error]}")
+        return
+
+    sequence_number += 1
+
+    chunks: list[bytes] = []
+
+    with open(source_path, "rb") as f:
+        while True:
+            chunk = f.read(MAX_PAYLOAD)
+            if not chunk:
+                break
+            chunks.append(chunk)
+
+
+
+    #Hueco para implementar la lógica de envío de chunks con SACK
+    sack_client = SackSenderClient(sock, server_address, base=sequence_number, next_seq=sequence_number, window_size=4, timeout=timeout)
+    sack_client.send_file_chunks(chunks)
+
+    #Algun error hay que tomar pero seria algo asi en general
+
+
+    # Send FIN
+    packet = Packet(
+        sequence_number=sack_client.next_seq,
+        ack_number=0,
+        flags=HeaderFlags(
+            type=HeaderFlags.Type.SACK,
+            operation=HeaderFlags.Operation.UPLOAD,
+            ack=False, syn=False, fin=True,
+        )
+    )
+    _, respuesta = stage_fin(sock, server_address, packet)
+    if respuesta.header.flags.error:
+        logging.error(f"({respuesta.header.flags.error}) {ERRORES_DESC[respuesta.header.flags.error]}")
+        return
 
 
 

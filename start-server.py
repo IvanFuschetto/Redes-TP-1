@@ -210,5 +210,127 @@ def validar_upload(file_size, file_path):
 
 
 
+
+
+import os
+
+MAX_SEQ = 256
+
+class ServerUploadSession:
+    def __init__(self, sock, client_addr, file_name: str, file_size: int):
+        self.sock = sock
+        self.client_addr = client_addr
+        self.file_name = file_name
+        self.file_size = file_size
+        
+        # Estado del protocolo
+        self.rcv_nxt = 0                    # Próximo SEQ esperado (0 a 255)
+        self.received_out_of_order = set()  # SEQs fuera de orden presentes en la ventana activa
+        
+        # Manejo de vueltas circulares (Wrap-around)
+        self.base_chunk_index = 0           # Índice absoluto del paquete rcv_nxt (0, 1, 2, ..., 300...)
+        
+        # Buffer de chunks recibidos: chunk_index_absoluto -> bytes
+        self.buffer = {}                    
+        self.bytes_written = 0
+        self.is_finished = False
+
+    def _seq_to_absolute_index(self, seq: int) -> int:
+        """
+        Convierte un número de secuencia circular (0-255) a su índice absoluto
+        de paquete basado en la posición de rcv_nxt/base_chunk_index.
+        """
+        # Distancia circular hacia adelante desde rcv_nxt
+        diff = (seq - self.rcv_nxt) % MAX_SEQ
+        return self.base_chunk_index + diff
+
+    def process_packet(self, packet: Packet):
+        seq = packet.header.sequence_number
+        payload = packet.payload or b""
+
+        # CASO 1: Paquete duplicado o viejo (ya fue superado por rcv_nxt)
+        if seq != self.rcv_nxt and ((self.rcv_nxt - seq) % MAX_SEQ) < 128 and seq not in self.received_out_of_order:
+            self.send_ack()
+            return
+
+        # Calcular el índice absoluto del chunk (soporta N vueltas al módulo 256)
+        abs_index = self._seq_to_absolute_index(seq)
+
+        # CASO 2: Paquete fuera de orden (deja un hueco)
+        if seq != self.rcv_nxt:
+            if seq not in self.received_out_of_order:
+                self.received_out_of_order.add(seq)
+                self.buffer[abs_index] = payload
+            self.send_ack()
+            return
+
+        # CASO 3: Paquete esperado (seq == self.rcv_nxt)
+        self.buffer[abs_index] = payload
+        
+        # Avanzar el puntero esperado y el índice absoluto
+        self.rcv_nxt = (self.rcv_nxt + 1) % MAX_SEQ
+        self.base_chunk_index += 1
+
+        # Avanzar la ventana acumulativa si ya teníamos guardados los siguientes paquetes en SACK
+        while self.rcv_nxt in self.received_out_of_order:
+            self.received_out_of_order.remove(self.rcv_nxt)
+            self.rcv_nxt = (self.rcv_nxt + 1) % MAX_SEQ
+            self.base_chunk_index += 1
+
+        # Verificar si completamos todos los bytes del archivo
+        current_data_size = sum(len(b) for b in self.buffer.values())
+        if current_data_size >= self.file_size:
+            self.is_finished = True
+            self.save_file()
+
+        self.send_ack()
+
+    def send_ack(self):
+        """Construye y envía el ACK/SACK."""
+        flags = HeaderFlags(
+            type=HeaderFlags.Type.SACK,
+            operation=HeaderFlags.Operation.UPLOAD,
+            ack=True,
+            syn=False,
+            fin=self.is_finished,
+            error=ERR_NONE
+        )
+        
+        sack_blocks = compute_sack_blocks(self.received_out_of_order, self.rcv_nxt)
+        sack_payload = SackPayload(sack_blocks).serialize()
+        
+        ack_num = (self.rcv_nxt - 1) % MAX_SEQ
+        
+        ack_packet = Packet(
+            sequence_number=0,
+            ack_number=ack_num,
+            flags=flags,
+            payload=sack_payload
+        )
+        self.sock.sendto(ack_packet.serialize(), self.client_addr)
+
+    def save_file(self):
+        """Escribe los datos ordenados del buffer en disco usando los índices absolutos."""
+        with open(self.file_name, "wb") as f:
+            # Iterar e incorporar los paquetes ordenados de 0 a N
+            for abs_idx in range(len(self.buffer)):
+                f.write(self.buffer[abs_idx])
+        print(f"[SERVIDOR] Archivo '{self.file_name}' guardado correctamente ({len(self.buffer)} chunks).")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 if __name__ == "__main__":
     main()
