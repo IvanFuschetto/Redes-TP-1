@@ -1,15 +1,14 @@
 import logging
-import os.path
 import socket
 import threading
-import time
-from queue import Queue, Empty
+from queue import Queue
 
 from parser import server_parse_args
-from protocolo import Packet, MessageSynUpload, HeaderFlags, MAX_PACKET_SIZE, ERR_FILE_TOO_BIG, ERR_FILE_EXISTS, \
-    ERRORES_DESC, MTU
+from protocolo import Packet, HeaderFlags, MAX_PACKET_SIZE
+from lib.channels import ClientChannel
+from lib.saw_server import upload_client_handler as upload_saw_client_handler
+from lib.saw_server import download_client_handler as download_saw_client_handler
 
-MAX_FILE_SIZE = 15 * 1024 * 1024
 
 def main():
     args = server_parse_args()
@@ -33,21 +32,8 @@ def main():
 
     try:
         while True:
-
-            #Limpiar threads que ya terminaron
-            for address in list(conexiones.keys()):
-                queue, thread = conexiones[address]
-
-                if not thread.is_alive():
-                    thread.join()
-                    del conexiones[address]
-
-                    logger.debug(
-                        f"Conexión de {address} eliminada"
-                    )
-
             try:
-                packet_bytes, address = sock.recvfrom(MTU)
+                packet_bytes, address = sock.recvfrom(MAX_PACKET_SIZE)
                 packet = Packet.deserialize(packet_bytes)
 
                 if not address in conexiones:
@@ -55,22 +41,23 @@ def main():
                         logger.info(f"Creando conexión para {address}")
                         queue = Queue()
                         if packet.header.flags.type == HeaderFlags.Type.SAW and packet.header.flags.operation == HeaderFlags.Operation.UPLOAD:
-                            thread = threading.Thread(target=upload_saw_client_handler, args=(sock, address, queue, args.storage, stop_event))
+                            channel = ClientChannel(sock, queue, address)
+                            thread = threading.Thread(target=upload_saw_client_handler, args=(channel, args.storage, stop_event))
+                        elif packet.header.flags.type == HeaderFlags.Type.SAW and packet.header.flags.operation == HeaderFlags.Operation.DOWNLOAD:
+                            channel = ClientChannel(sock, queue, address)
+                            thread = threading.Thread(target=download_saw_client_handler, args=(channel, args.storage, stop_event))
                         else:
                             logger.warning(f"Recibido SYN de {address} con tipo/operación no soportados: {packet.header.flags.type.name}/{packet.header.flags.operation.name}")
                             continue
                         thread.start()
-
                         conexiones[address] = (queue, thread)
-
-                        queue.put(packet)
                     else:
                         logger.debug(f"Recibido SIN SYN de {address}: {packet}")
                 else:
                     conexiones[address][0].put(packet)
+
             except socket.timeout:
-                # Delay para inyectar el KeyboardInterrupt
-                time.sleep(0.0001)
+                clean_conexiones(conexiones)
                 continue
 
     except KeyboardInterrupt:
@@ -86,128 +73,15 @@ def main():
         logger.info("Servidor cerrado correctamente.")
 
 
-
-def upload_saw_client_handler(sock, address, queue: Queue, storage_path, stop_event: threading.Event):
-    syn_received = False
-    last_packet_sent = None
-
-    last_sequence_number_received = None
-    last_sequence_number_sent = None
-
-    file = None
-
-    try:
-        while not stop_event.is_set():
-            try:
-                packet_received: Packet = queue.get(block=True, timeout=10)
-
-                # Validación de PROTOCOLO y OPERACIÓN consistentes
-                if packet_received.header.flags.type != HeaderFlags.Type.SAW:
-                    raise ValueError(f"Protocolo alterado: Recibido de {address}: {packet_received} con protocolo alterado: {packet_received.header.flags.type.name} en lugar de {HeaderFlags.Type.SAW.name}")
-                if packet_received.header.flags.operation != HeaderFlags.Operation.UPLOAD:
-                    raise ValueError(f"Operación alterada: Recibido de {address}: {packet_received} con operación alterada: {packet_received.header.flags.operation.name} en lugar de {HeaderFlags.Operation.UPLOAD.name}")
-
-                # SYN RECEIVED
-                if packet_received.header.flags.syn:
-                    if not syn_received:
-                        last_sequence_number_received = packet_received.header.sequence_number
-                        message = MessageSynUpload.deserialize(packet_received.payload)
-                        file_size = message.file_size
-                        file_path = os.path.join("storage", message.file_name)
-                        error = validar_upload(file_size, file_path)
-
-                        last_sequence_number_sent = 1
-                        packet = Packet(
-                            last_sequence_number_sent,
-                            last_sequence_number_received,
-                            HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.UPLOAD, ack=True, syn=True, fin=False, error=error),
-                        )
-                        last_packet_sent = packet
-                        syn_received = True
-                        sock.sendto(packet.serialize(), address)
-
-                        if not error:
-                            file = open(file_path, "wb")
-                        else:
-                            logging.warning(f"Error al intentar recibir: {file_path}. ({error}) {ERRORES_DESC[error]}")
-                            break
-
-                    else:
-                        # Ya se recibió paquete SYN. Se reenvía respuesta
-                        sock.sendto(last_packet_sent.serialize(), address)
-
-                # FIN RECEIVED
-                elif packet_received.header.flags.fin:
-                    if file is not None and not file.closed:
-                        file.close()
-                        last_sequence_number_sent += 1
-                        last_sequence_number_sent = last_sequence_number_sent if last_sequence_number_sent < 256 else last_sequence_number_sent - 256
-                        last_sequence_number_received = packet_received.header.sequence_number
-                        packet = Packet(
-                            last_sequence_number_sent,
-                            last_sequence_number_received,
-                            HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.UPLOAD, ack=True, syn=False, fin=True),
-                        )
-                        last_packet_sent = packet
-
-                    sock.sendto(packet.serialize(), address)
-                    logging.info(f"Transferencia de {address} finalizada exitosamente")
-                    #NO debido a que se pude perder este ack de fin y el cliente se queda esperando. Se cierra el archivo y se termina el hilo, pero no se hace break para que pueda reintentar el cliente
-                    #break
-
-                # OTRO CASO
-                else:
-                    expected_sequence_number_received = last_sequence_number_received + 1
-                    expected_sequence_number_received = expected_sequence_number_received if expected_sequence_number_received < 256 else expected_sequence_number_received - 256
-                    if not expected_sequence_number_received == packet_received.header.sequence_number:
-                        # Estoy recibiendo un paquete que no espero (o ya lo recibí, o se perdió uno)
-                        # Reenvío el último paquete enviado
-                        sock.sendto(last_packet_sent.serialize(), address)
-                        continue
-
-                    # Recibí el paquete que esperaba
-                    # No es FIN ni SYN => Payload son datos a recibir
-                    error_code = 0
-                    datos = packet_received.payload
-                    try:
-                        file.write(datos)
-                    except Exception as e:
-                        logging.error(f"{address}: Error al escribir en el archivo {file.name}: {e}")
-                        error_code = 7 # Error inesperado
-
-                    last_sequence_number_sent += 1
-                    last_sequence_number_sent = last_sequence_number_sent if last_sequence_number_sent < 256 else last_sequence_number_sent - 256
-                    last_sequence_number_received = packet_received.header.sequence_number
-                    packet = Packet(
-                        last_sequence_number_sent,
-                        last_sequence_number_received,
-                        HeaderFlags(
-                            HeaderFlags.Type.SAW, HeaderFlags.Operation.UPLOAD,
-                            ack=True, syn=False, fin=False, error=error_code
-                        )
-                    )
-                    last_packet_sent = packet
-                    sock.sendto(packet.serialize(), address)
-
-            except Empty:
-                logging.debug(f"Queue Timeout en client handler de {address}")
-                break
-
-            except ValueError as e:
-                logging.warning(f"{e}")
-
-    finally:
-        if file is not None and not file.closed:
-            file.close()
-
-
-def validar_upload(file_size, file_path):
-    if file_size > MAX_FILE_SIZE:
-        return ERR_FILE_TOO_BIG
-    if os.path.exists(file_path):
-        return ERR_FILE_EXISTS
-    return 0
-
+def clean_conexiones(conexiones):
+    address_thread_finished = []
+    for address, (queue, thread) in conexiones.items():
+        if not thread.is_alive():
+            thread.join()
+            address_thread_finished.append(address)
+            logging.info(f"Hilo de {address} FINALIZADO")
+    for address in address_thread_finished:
+        conexiones.pop(address)
 
 
 if __name__ == "__main__":
