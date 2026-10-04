@@ -115,9 +115,8 @@ def upload(server_address, protocol, source_path, dest_filename):
                 upload_sack(sock, server_address, source_path, dest_filename)
             case _:
                 raise ValueError(f"Protocolo {protocol} no implementado.")
-    except Exception as e:
+    finally:
         sock.close()
-        raise e
 
 
 def try_send(sock, address, packet: Packet) -> Packet:
@@ -154,6 +153,7 @@ def try_send(sock, address, packet: Packet) -> Packet:
     raise TimeoutError("Error de Conexión ! Demasiados Timeouts")
 
 MAX_TIMEOUTS_CONSECUTIVOS = 20
+MIN_RTO = 0.1  # Piso del timeout de retransmisión (segundos)
 MAX_RTO = 1.0  # Tope del timeout de retransmisión (segundos). Debe ser bastante menor al timeout de inactividad del servidor (10s)
 
 class SackSenderClient:
@@ -168,15 +168,15 @@ class SackSenderClient:
         self.next_seq =  next_seq                     # Próximo SEQ libre para asignar a un nuevo paquete
         self.unacked_packets: dict[int, Packet] = {} # seq -> Packet enviado pendiente
         self.sacked_seqs: set[int] = set()           # SEQs informados en bloques SACK (para saber qué no retransmitir)
-        self.fast_retransmitted: set[int] = set()    # Huecos ya retransmitidos por Fast Retransmit (para no repetirlos en cada dup ACK)
+        self.last_retx: dict[int, float] = {}        # seq -> instante de su última retransmisión (un hueco no se reenvía más de una vez por RTT)
 
 
         self.send_times: dict[int, float] = {}       # seq -> momento del primer envío (para muestrear RTT)
         self.rtt_muestra: float | None = None
 
         #valores semilla
-        self.rtt_estimado: float = 1.0
-        self.rtt_desviacion: float = 0.25
+        self.rtt_estimado: float | None = None       # se inicializa con la primera muestra (RFC 6298)
+        self.rtt_desviacion: float = 0.0
 
 
 
@@ -278,6 +278,10 @@ class SackSenderClient:
         logging.info("Transferencia de datos completada con éxito.")
 
     def _handle_ack_response(self, ack_packet: Packet):
+        if ack_packet.header.flags.error:
+            error = ack_packet.header.flags.error
+            raise IOError(f"({error}) {ERRORES_DESC.get(error, 'error desconocido')}")
+
         ack_num = ack_packet.header.ack_number
         #Solo tomas los sacks faltaria algo que tome el payload = datos (bytes crudos) que seria rango del sack * 2
         sack_info = SackPayload.deserialize(ack_packet.payload)
@@ -326,7 +330,7 @@ class SackSenderClient:
                 self.unacked_packets.pop(curr, None)
                 self.send_times.pop(curr, None)
                 self.sacked_seqs.discard(curr)
-                self.fast_retransmitted.discard(curr)
+                self.last_retx.pop(curr, None)
                 if curr == ack_num:
                     break
                 curr = SequenceNumber.next_seq(curr)
@@ -342,13 +346,26 @@ class SackSenderClient:
             else:
                 #formulas (se usan cuando llega un ack limpio sin repetidos antes)
                 # Muestra = tiempo desde que se envió el paquete confirmado hasta que llegó su ACK
-                self.rtt_muestra = time.monotonic() - enviado_en
-                self.rtt_estimado = 0.875*self.rtt_estimado + 0.125*self.rtt_muestra
-                self.rtt_desviacion = 0.75*self.rtt_desviacion + 0.25*abs(self.rtt_muestra - self.rtt_estimado)
-                self.timeout = min(self.rtt_estimado + 4*self.rtt_desviacion, MAX_RTO)
+                self._actualizar_rtt(time.monotonic() - enviado_en)
                 self._restart_deadline()
+
+            # ACK parcial: la nueva base quedó en un hueco con paquetes posteriores ya SACKeados.
+            # Se reenvía ese hueco ahora (uno por ACK) en vez de esperar otro timeout.
+            if self.sacked_seqs:
+                self._retransmit_huecos_fast(max_huecos=1)
                 #tiempo restante = timeout
                 #self.timing_t_interval =  # Reiniciar el timer para la nueva base
+
+    def _actualizar_rtt(self, muestra: float):
+        """SRTT / RTTVAR según RFC 6298 (la primera muestra inicializa ambos)."""
+        if self.rtt_estimado is None:
+            self.rtt_estimado = muestra
+            self.rtt_desviacion = muestra / 2
+        else:
+            self.rtt_desviacion = 0.75*self.rtt_desviacion + 0.25*abs(self.rtt_estimado - muestra)
+            self.rtt_estimado = 0.875*self.rtt_estimado + 0.125*muestra
+        self.rtt_muestra = muestra
+        self.timeout = min(max(self.rtt_estimado + 4*self.rtt_desviacion, MIN_RTO), MAX_RTO)
 
     def _huecos(self, hasta_ultimo_sack: bool) -> list[int]:
         """
@@ -373,36 +390,44 @@ class SackSenderClient:
         return huecos
 
     def _retransmit(self, seqs: list[int]):
+        ahora = time.monotonic()
         for seq in seqs:
             self.send_times.pop(seq, None)
+            self.last_retx[seq] = ahora
             self.sock.sendto(self.unacked_packets[seq].serialize(), self.server_addr)
             logging.debug(f"Retransmitido {self.unacked_packets[seq]}")
         if seqs:
             self.base_retransmited = True
 
     def _handle_timeout(self):
-        """Retransmisión por vencimiento de Timer de seguridad: se reenvían todos los paquetes no SACKeados."""
+        """Vence el timer de la base: se reenvía SOLO el primer paquete no confirmado (la base)."""
         self.timeouts_consecutivos += 1
         if self.timeouts_consecutivos > MAX_TIMEOUTS_CONSECUTIVOS:
             raise TimeoutError("Error de Conexión ! Demasiados Timeouts")
 
-        huecos = self._huecos(hasta_ultimo_sack=False)
+        huecos = self._huecos(hasta_ultimo_sack=False)[:1]
         logging.debug(f"Timeout vencido (base={self.base}). Retransmitiendo SEQs={huecos}")
         # Agrando el doble la ventana de fin de temporizacion para el siguiente timeout
         self.timeout = min(self.timeout * 2, MAX_RTO)
         self._retransmit(huecos)
-        self.fast_retransmitted.update(huecos)
         self.dup_ack_count = 0
         # Reiniciar timer sobre los paquetes recién retransmitidos
         self._restart_deadline()
 
-    def _retransmit_huecos_fast(self):
-        """Fast Retransmit: reenvía los huecos informados por SACK que todavía no se retransmitieron."""
-        huecos = [seq for seq in self._huecos(hasta_ultimo_sack=True) if seq not in self.fast_retransmitted]
+    def _retransmit_huecos_fast(self, max_huecos: int | None = None):
+        """
+        Reenvía los huecos (anteriores al último SACK) que no se retransmitieron en el último RTT.
+        Un hueco se puede reenviar más de una vez si su retransmisión se perdió (sigue sin SACK pasado ~1 RTT).
+        """
+        ahora = time.monotonic()
+        espera = 1.5 * self.rtt_estimado if self.rtt_estimado is not None else self.timeout
+        huecos = [seq for seq in self._huecos(hasta_ultimo_sack=True)
+                  if ahora - self.last_retx.get(seq, float("-inf")) >= espera]
+        if max_huecos is not None:
+            huecos = huecos[:max_huecos]
         if huecos:
             logging.debug(f"Fast Retransmit sobre huecos SEQs={huecos}")
             self._retransmit(huecos)
-            self.fast_retransmitted.update(huecos)
         self._set_remaining_timeout()
 
 
@@ -600,5 +625,5 @@ def main():
 
     logger.info(f"Ejecución finalizada")
 
-main()
-
+if __name__ == "__main__":
+    main()

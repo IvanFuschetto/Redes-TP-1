@@ -6,7 +6,7 @@ import time
 from queue import Queue, Empty
 
 from parser import server_parse_args
-from protocolo import Packet, MessageSynUpload, HeaderFlags, MAX_PACKET_SIZE, ERR_FILE_TOO_BIG, ERR_FILE_EXISTS, \
+from protocolo import Packet, MessageSynUpload, HeaderFlags, MAX_PACKET_SIZE, ERR_FILE_TOO_BIG, ERR_FILE_EXISTS, ERR_INVALID_NAME, \
     ERRORES_DESC, MTU, ERR_NONE, ERR_UNEXPECTED, MAX_SEQ, SACK_WINDOW_SIZE, SequenceNumber, SackPayload, \
     compute_sack_blocks
 
@@ -19,6 +19,7 @@ def main():
         format='%(levelname)s: %(message)s',
     )
     logger = logging.getLogger(__name__)
+    os.makedirs(args.storage, exist_ok=True)
     logger.debug(f"Almacenando en {args.storage}")
     logger.info(f"Servidor escuchando en {args.host}:{args.port}")
 
@@ -116,8 +117,8 @@ def upload_saw_client_handler(sock, address, queue: Queue, storage_path, stop_ev
                         last_sequence_number_received = packet_received.header.sequence_number
                         message = MessageSynUpload.deserialize(packet_received.payload)
                         file_size = message.file_size
-                        file_path = os.path.join("storage", message.file_name)
-                        error = validar_upload(file_size, file_path)
+                        file_path = os.path.join(storage_path, message.file_name)
+                        error = validar_upload(file_size, file_path, message.file_name)
 
                         last_sequence_number_sent = 1
                         packet = Packet(
@@ -204,7 +205,20 @@ def upload_saw_client_handler(sock, address, queue: Queue, storage_path, stop_ev
             file.close()
 
 
-def validar_upload(file_size, file_path):
+def nombre_valido(nombre: str) -> bool:
+    """Rechaza vacíos, rutas (../, subdirectorios) y caracteres peligrosos."""
+    return (
+        bool(nombre)
+        and nombre == os.path.basename(nombre)
+        and nombre not in (".", "..")
+        and "\\" not in nombre
+        and "\0" not in nombre
+    )
+
+
+def validar_upload(file_size, file_path, file_name=None):
+    if file_name is not None and not nombre_valido(file_name):
+        return ERR_INVALID_NAME
     if file_size > MAX_FILE_SIZE:
         return ERR_FILE_TOO_BIG
     if os.path.exists(file_path):
@@ -316,19 +330,23 @@ def upload_sack_client_handler(sock, address, queue: Queue, storage_path, stop_e
                 if packet_received.header.flags.syn:
                     if syn_ack_packet is None:
                         message = MessageSynUpload.deserialize(packet_received.payload)
-                        file_path = os.path.join("storage", message.file_name)
-                        error = validar_upload(message.file_size, file_path)
+                        file_path = os.path.join(storage_path, message.file_name)
+                        error = validar_upload(message.file_size, file_path, message.file_name)
 
+                        if not error:
+                            first_seq = SequenceNumber.next_seq(packet_received.header.sequence_number)
+                            try:
+                                session = ServerUploadSession(sock, address, file_path, message.file_size, first_seq)
+                            except OSError as e:
+                                logging.error(f"{address}: no se pudo crear {file_path}: {e}")
+                                error = ERR_UNEXPECTED
+                        if error:
+                            logging.warning(f"Error al intentar recibir: {file_path}. ({error}) {ERRORES_DESC[error]}")
                         syn_ack_packet = Packet(
                             0,
                             packet_received.header.sequence_number,
                             HeaderFlags(HeaderFlags.Type.SACK, HeaderFlags.Operation.UPLOAD, ack=True, syn=True, fin=False, error=error),
                         )
-                        if error:
-                            logging.warning(f"Error al intentar recibir: {file_path}. ({error}) {ERRORES_DESC[error]}")
-                        else:
-                            first_seq = SequenceNumber.next_seq(packet_received.header.sequence_number)
-                            session = ServerUploadSession(sock, address, file_path, message.file_size, first_seq)
 
                     # Si ya se recibió el SYN, se reenvía la misma respuesta
                     sock.sendto(syn_ack_packet.serialize(), address)
