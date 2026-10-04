@@ -31,12 +31,16 @@ ERR_NONE = 0
 ERR_INVALID_NAME = 1
 ERR_FILE_EXISTS = 2
 ERR_FILE_TOO_BIG = 3
+ERR_FILE_NOT_EXISTS = 4
+ERR_IO_INTERNO = 7
  
 ERRORES_DESC = {
     ERR_NONE: "sin error",
     ERR_INVALID_NAME: "nombre de archivo invalido",
     ERR_FILE_EXISTS: "el archivo ya existe en el servidor",
     ERR_FILE_TOO_BIG: "el archivo es demasiado grande",
+    ERR_FILE_NOT_EXISTS: "el archivo no existe en el servidor",
+    ERR_IO_INTERNO: "error IO interno",
 }
  
  
@@ -219,4 +223,28 @@ class MessageSynUpload:
 def test_MessageSynUpload():
     message = MessageSynUpload.deserialize(MessageSynUpload(1024, "Hola.txt").serialize())
     assert message.file_size == 1024
+    assert message.file_name == "Hola.txt"
+
+
+class MessageSynDownload:
+    """
+    Abstracción de un mensaje de Sincronización para iniciar operacion DOWNLOAD.
+    Se informa el nombre del archivo a descargar.
+    """
+    def __init__(self, file_name: str):
+        self.file_name = file_name
+
+    def serialize(self):
+        fn_len = int.to_bytes(len(self.file_name), length=1, byteorder="big")
+        fn = self.file_name.encode()
+        return fn_len + fn
+
+    @classmethod
+    def deserialize(cls, message):
+        fn_len = int.from_bytes(message[:1], byteorder='big')
+        fn = message[1:1+fn_len].decode()
+        return cls(fn)
+
+def test_MessageSynDownload():
+    message = MessageSynDownload.deserialize(MessageSynDownload("Hola.txt").serialize())
     assert message.file_name == "Hola.txt"
