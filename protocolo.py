@@ -301,7 +301,7 @@ def compute_sack_blocks(out_of_order_seqs: set[int], rcv_nxt: int) -> list[tuple
 
 MAX_SEQ = 256
 # Tamaño de ventana de SACK (Selective Repeat). Debe ser <= MAX_SEQ / 2
-SACK_WINDOW_SIZE = 4
+SACK_WINDOW_SIZE = 16
 
 class SequenceNumber:
     """Maneja la aritmética circular de los números de secuencia (0 a 255)."""
