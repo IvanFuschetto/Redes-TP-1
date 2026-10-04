@@ -1,0 +1,11 @@
+Tener carpeta storage
+
+archivo de servidor en una terminal:
+python3 server_sack.py -H 127.0.0.1 -p 12345 -s storage -v
+
+
+Subir un archivo(cliente)
+python3 client_sack.py upload -s archivo_local.txt -n subido.txt -H 127.0.0.1 -p 12345
+
+Descargar un archivo del servidor(cliente)
+python3 client_sack.py download subido.txt -H 127.0.0.1 -p 12345 -d descargado.txt
