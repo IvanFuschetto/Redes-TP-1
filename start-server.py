@@ -11,6 +11,8 @@ from protocolo import Packet, MessageSynUpload, HeaderFlags, MAX_PACKET_SIZE, ER
     compute_sack_blocks
 
 MAX_FILE_SIZE = 15 * 1024 * 1024
+# Inactividad de una conexión SACK. Debe superar MAX_TIMEOUTS_CONSECUTIVOS * MAX_RTO del cliente (20s)
+SACK_INACTIVITY_TIMEOUT = 30
 
 def main():
     args = server_parse_args()
@@ -304,7 +306,7 @@ def upload_sack_client_handler(sock, address, queue: Queue, storage_path, stop_e
     try:
         while not stop_event.is_set():
             try:
-                packet_received: Packet = queue.get(block=True, timeout=10)
+                packet_received: Packet = queue.get(block=True, timeout=SACK_INACTIVITY_TIMEOUT)
 
                 # Validación de PROTOCOLO y OPERACIÓN consistentes
                 if packet_received.header.flags.type != HeaderFlags.Type.SACK:

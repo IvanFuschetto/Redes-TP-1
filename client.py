@@ -155,7 +155,7 @@ def try_send(sock, address, packet: Packet) -> Packet:
     raise TimeoutError("Error de Conexión ! Demasiados Timeouts")
 
 MAX_TIMEOUTS_CONSECUTIVOS = 20
-MAX_RTO = 1.0  # Tope del timeout de retransmisión (segundos). Debe ser bastante menor al timeout de inactividad del servidor (10s)
+MAX_RTO = 1.0  # Tope del timeout de retransmisión (segundos).
 
 class SackSenderClient:
     def __init__(self, sock: socket.socket, server_addr: tuple, base: int, next_seq: int, timeout: float, window_size: int = SACK_WINDOW_SIZE):
@@ -174,14 +174,21 @@ class SackSenderClient:
         self.rtt_estimado: float = 1.0
         self.rtt_desviacion: float = 0.25
 
+        # Muestreo de RTT: hora del primer envío de cada SEQ (no es un timer)
+        self.send_times: dict[int, float] = {}
+        self.retransmitted: set[int] = set()           # SEQs retransmitidos alguna vez (Algoritmo de Karn)
+
         # Control de Retransmisión Rápida (Fast Retransmit)
-        # Se inicializa directamente en la base negociada en el SYN (sin restarle 1)
-        self.last_ack_num: int = base
+        # Empieza en el ACK del SYN-ACK: el servidor responde ACK = base - 1 hasta recibir la base
+        self.last_ack_num: int = (base - 1) % MAX_SEQ
         self.dup_ack_count: int = 0
+        self.in_recovery = False
+        self.recovery_point: int | None = None         # Último SEQ enviado al entrar en recuperación
+        self.fast_retransmitted: set[int] = set()      # SEQs ya retransmitidos en la recuperación actual
+        self.after_timeout = False                     # No se entra en recuperación hasta recibir un ACK nuevo
 
         # Timer Único de la Ventana (Asociado a 'base')
         self.deadline: float | None = None
-        self.base_retransmited: float | None = None    # Se marca con timestamp o True si fue retransmitido (Algoritmo de Karn)
         self.timeouts_consecutivos = 0
 
     def _set_remaining_timeout(self):
@@ -199,15 +206,26 @@ class SackSenderClient:
         self.deadline = time.monotonic() + self.timeout
         self._set_remaining_timeout()
 
-    def _huecos(self) -> list[int]:
-        """Devuelve las secuencias no confirmadas ni por ACK acumulativo ni por SACK."""
-        huecos = []
+    def _lost_packets(self) -> list[int]:
+        """
+        Regla de pérdida (RFC 6675): SEQs no confirmados ni informados por SACK, por debajo
+        del SEQ más alto informado por SACK. Los posteriores pueden estar todavía en vuelo.
+        """
+        if not self.sacked_seqs:
+            return []
+        highest = max(self.sacked_seqs, key=lambda seq: SequenceNumber.distance(seq, self.base))
+        lost = []
         curr = self.base
-        while curr != self.next_seq:
+        while curr != highest:
             if curr in self.unacked_packets and curr not in self.sacked_seqs:
-                huecos.append(curr)
+                lost.append(curr)
             curr = SequenceNumber.next_seq(curr)
-        return huecos
+        return lost
+
+    def _retransmit(self, seq: int):
+        self.sock.sendto(self.unacked_packets[seq].serialize(), self.server_addr)
+        self.retransmitted.add(seq)
+        logging.debug(f"[CLIENTE] Retransmitido SEQ={seq}")
 
     def send_file_chunks(self, chunks: list[bytes]):
         chunk_idx = 0
@@ -238,6 +256,7 @@ class SackSenderClient:
                 )
 
                 self.unacked_packets[self.next_seq] = packet
+                self.send_times[self.next_seq] = time.monotonic()
                 self.sock.sendto(packet.serialize(), self.server_addr)
                 logging.debug(f"[CLIENTE] Enviado SEQ={self.next_seq} (Chunk {chunk_idx + 1}/{total_chunks})")
 
@@ -284,44 +303,63 @@ class SackSenderClient:
             self.dup_ack_count += 1
             logging.debug(f"[CLIENTE] ACK duplicado recibido ({self.dup_ack_count}) -> ACK={ack_num}")
 
-            # Cada 3 ACKs duplicados se retransmiten los huecos (permite reenviar si se acumulan 6, 9, etc.)
-            if self.dup_ack_count % 3 == 0:
-                logging.debug(f"[CLIENTE] Fast Retransmit gatillado ({self.dup_ack_count} dup ACKs)")
-                self._retransmit_fast_huecos()
+            # Con el 3.º duplicado se entra en recuperación rápida y se reenvía SOLO la base.
+            # Los duplicados siguientes los generan paquetes que ya estaban en vuelo: no se reenvía nada
+            if self.dup_ack_count == 3 and not self.in_recovery and not self.after_timeout:
+                logging.debug(f"[CLIENTE] Fast Retransmit gatillado: reenviando base={self.base}")
+                self.in_recovery = True
+                self.recovery_point = (self.next_seq - 1) % MAX_SEQ
+                self.fast_retransmitted = {self.base}
+                self._retransmit(self.base)
+                self._restart_deadline()
 
         elif not SequenceNumber.is_in_window(ack_num, self.base, self.window_size):
             logging.debug(f"[CLIENTE] ACK fuera de ventana recibido -> ACK={ack_num}. Ignorando.")
 
         else:
             # --- ACK NUEVO (Avanza la Base) ---
-            self.last_ack_num = ack_num
-            self.dup_ack_count = 0
-            self.timeouts_consecutivos = 0
+            # Muestra de RTT (Karn): solo si el paquete nunca se retransmitió ni estaba confirmado por SACK
+            rtt_muestra = None
+            if ack_num not in self.retransmitted and ack_num not in self.sacked_seqs and ack_num in self.send_times:
+                rtt_muestra = time.monotonic() - self.send_times[ack_num]
 
             # Liberar paquetes confirmados acumulativamente
             curr = self.base
             while True:
                 self.unacked_packets.pop(curr, None)
                 self.sacked_seqs.discard(curr)
+                self.send_times.pop(curr, None)
+                self.retransmitted.discard(curr)
                 if curr == ack_num:
                     break
                 curr = SequenceNumber.next_seq(curr)
 
             # Avanzar la base
             self.base = SequenceNumber.next_seq(ack_num)
+            self.last_ack_num = ack_num
+            self.dup_ack_count = 0
+            self.timeouts_consecutivos = 0
+            self.after_timeout = False
             logging.debug(f"[CLIENTE] ACK nuevo recibido={ack_num}. Nueva base={self.base}")
+            
+            # Muestreo RTT & Actualización de Timer (Jacobson/Karels. Sin muestra, se conserva el RTO vigente)
+            if rtt_muestra is not None:
+                self.rtt_estimado = 0.875 * self.rtt_estimado + 0.125 * rtt_muestra
+                self.rtt_desviacion = 0.75 * self.rtt_desviacion + 0.25 * abs(rtt_muestra - self.rtt_estimado)
+                self.timeout = min(self.rtt_estimado + 4 * self.rtt_desviacion, MAX_RTO)
+            self._restart_deadline()
 
-            # Muestreo RTT & Actualización de Timer (Karn: Ignorar si la base fue retransmitida)
-            if self.base_retransmited:
-                self.base_retransmited = False
-                self._restart_deadline()
-            else:
-                rtt_muestra = self.timeout - (self.deadline - time.monotonic())
-                if rtt_muestra > 0:
-                    self.rtt_estimado = 0.875 * self.rtt_estimado + 0.125 * rtt_muestra
-                    self.rtt_desviacion = 0.75 * self.rtt_desviacion + 0.25 * abs(rtt_muestra - self.rtt_estimado)
-                    self.timeout = min(self.rtt_estimado + 4 * self.rtt_desviacion, MAX_RTO)
-                self._restart_deadline()
+            if self.in_recovery:
+                en_vuelo = SequenceNumber.distance(self.next_seq, self.base)
+                if not SequenceNumber.is_in_window(self.recovery_point, self.base, en_vuelo):
+                    # El ACK cubrió el recovery_point: fin de la recuperación
+                    self.in_recovery = False
+                else:
+                    # ACK parcial: se reenvían los perdidos que todavía no se reenviaron en esta recuperación
+                    for seq in self._lost_packets():
+                        if seq not in self.fast_retransmitted:
+                            self._retransmit(seq)
+                            self.fast_retransmitted.add(seq)
 
     def _handle_timeout(self):
         """Retransmisión POR TIMEOUT: Únicamente reenvía el paquete en 'base'."""
@@ -329,26 +367,17 @@ class SackSenderClient:
         if self.timeouts_consecutivos > MAX_TIMEOUTS_CONSECUTIVOS:
             raise TimeoutError("Error de Conexión: Demasiados timeouts consecutivos.")
 
+        # Se cancela la recuperación rápida y no se vuelve a entrar hasta recibir un ACK nuevo
+        self.in_recovery = False
+        self.after_timeout = True
+
         if self.base in self.unacked_packets:
             logging.debug(f"[CLIENTE] Timeout vencido en base={self.base}. Reenviando solo la base.")
-            
-            # Reenviar ÚNICAMENTE la base
-            packet_base = self.unacked_packets[self.base]
-            self.sock.sendto(packet_base.serialize(), self.server_addr)
+            self._retransmit(self.base)
 
-            # Algoritmo de Karn + Backoff exponencial
-            self.base_retransmited = True
+            # Backoff exponencial
             self.timeout = min(self.timeout * 2, MAX_RTO)
-            self._restart_deadline()
-
-    def _retransmit_fast_huecos(self):
-        """Fast Retransmit: Reenvía los huecos pendientes de ACK/SACK dentro de la ventana."""
-        huecos = self._huecos()
-        if huecos:
-            logging.debug(f"[CLIENTE] Reenviando huecos por Fast Retransmit: {huecos}")
-            for seq in huecos:
-                self.sock.sendto(self.unacked_packets[seq].serialize(), self.server_addr)
-            self.base_retransmited = True
+        self._restart_deadline()
 
 
 
