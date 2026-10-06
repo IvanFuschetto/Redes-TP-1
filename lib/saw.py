@@ -11,7 +11,7 @@ def try_send(channel: Channel, packet: Packet) -> Packet:
     Devuelve el Packet recibido.
     """
 
-    timeout_cont = 5
+    timeout_cont = 10 # 5
     while timeout_cont > 0:
         try:
             ack_number_esperado = packet.header.sequence_number
