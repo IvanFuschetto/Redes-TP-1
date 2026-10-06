@@ -623,8 +623,7 @@ El desarrollo de este trabajo práctico permitió afianzar y aplicar de manera t
 
 - Se comprendió a fondo el modelo de servicio que ofrece la capa de transporte: la ausencia de garantías en UDP obligó a diseñar y construir artesanalmente en la capa de aplicación todos los mecanismos que hacen a la confiabilidad (encabezados, sincronización, detección de pérdidas por temporizadores, confirmaciones positivas, numeración de secuencia y control de duplicados).
 - La experiencia práctica con la interfaz de sockets demandó la implementación de patrones de concurrencia y desmultiplexación para brindar servicio multicliente.
-**COMPLETAR!!! A CHEQUEAR - ESCRITO POR IA**
 - Las pruebas empíricas en el entorno virtualizado de Mininet demostraron con claridad los límites teóricos del protocolo **Stop and Wait**: al estar acotado a un único paquete en tránsito a la vez, su rendimiento está directamente limitado por el RTT de la red, resultando en un factor de utilización del canal sumamente bajo que empeora sensiblemente ante pérdidas de paquetes.
 - Esta limitación comprueba experimentalmente la necesidad y justificación de los protocolos con ventana deslizante (como SACK o TCP), que logran maximizar la eficiencia de la red transmitiendo ráfagas continuas de datos.
-**COMPLETAR!!! A CHEQUEAR - ESCRITO POR IA**
+
 
