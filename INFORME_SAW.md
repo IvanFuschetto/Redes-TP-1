@@ -87,8 +87,8 @@ El protocolo se diseñó con un encabezado compacto y eficiente de **3 bytes**, 
 ```
 
 
-1. **Byte 0 - Sequence Number (SN):** Entero sin signo de 8 bits (rango 0 a 255). Identifica de manera unívoca la posición relativa **del paquete** en la secuencia. En Stop and Wait, avanza mediante aritmética modular: $SN_{siguiente} = (SN + 1) \pmod{256}$.
-2. **Byte 1 - Acknowledgment Number (ACKN):** Entero sin signo de 8 bits (rango 0 a 255). Confirma el número de secuencia exacto **del paquete recibido** que se está reconociendo.
+1. **Byte 0 - Sequence Number (SN):** Entero sin signo de 8 bits (rango 0 a 255). Identifica de manera unívoca la posición relativa **del paquete** en la secuencia. En Stop and Wait, avanza mediante aritmética modular: $SN_{siguiente} = (SN + 1) \pmod{256}$. En SACK sólo se numeran los paquetes de datos y el `FIN` del Emisor (empezando en 1 y con la misma aritmética modular); los paquetes de control (`SYN`, `SYN-ACK`, `ACK` y `FIN-ACK`) llevan `SN=0`, ya que el Emisor identifica las confirmaciones únicamente por el campo `ACKN`.
+2. **Byte 1 - Acknowledgment Number (ACKN):** Entero sin signo de 8 bits (rango 0 a 255). En Stop and Wait confirma el número de secuencia exacto **del paquete recibido** que se está reconociendo. En SACK es un **ACK acumulativo**: indica el número de secuencia del último paquete recibido **en orden**, es decir, que todos los paquetes hasta ese número ya fueron recibidos.
 3. **Byte 2 - Flags y Código de Error:** Compuesto por 5 bits de banderas de control y 3 bits para señalización de errores:
    - **Bit 7 (`TY`):** Tipo de protocolo RDT. `0` = Stop and Wait (SAW), `1` = SACK.
    - **Bit 6 (`OP`):** Operación. `1` = UPLOAD, `0` = DOWNLOAD.
@@ -114,10 +114,27 @@ Durante la fase de sincronización (`SYN = 1`), el payload no contiene fragmento
 - **`MessageSynDownload` (Fase SYN de DOWNLOAD):**
   - Byte 0 (1 byte): Longitud del nombre del archivo solicitado.
   - Bytes 1 en adelante: Nombre del archivo codificado en UTF-8.
+- **`MessageSynAckDownload` (Respuesta SYN-ACK de DOWNLOAD, sólo SACK):**
+  - Bytes 0 a 2 (3 bytes): Tamaño del archivo a descargar en bytes (entero *big-endian* sin signo). Le permite al Cliente (Receptor) verificar que recibió el archivo completo antes de aceptar el `FIN`.
 
 #### Información SACK
 
-**COMPLETAR!!!**
+En SACK, los paquetes de confirmación (`ACK=1`, sin `SYN` ni `FIN`) transportan en su payload la lista de bloques de paquetes que el Receptor recibió **fuera de orden**, es decir, posteriores a `ACKN` pero separados de él por al menos un paquete faltante (un *hueco*):
+
+```
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|  N (bloques)  |   Inicio 1    |     Fin 1     |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|   Inicio 2    |     Fin 2     |      ...      |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+- **Byte 0:** Cantidad `N` de bloques.
+- **Bytes siguientes:** `N` pares `(Inicio, Fin)` de 1 byte cada uno. Cada par representa un rango contiguo de números de secuencia recibidos, con ambos extremos inclusive.
+
+Los bloques se arman agrupando los números de secuencia contiguos del buffer de fuera de orden, ordenados según su distancia circular a partir del próximo número esperado. Por ejemplo, si el Receptor tiene en orden hasta el paquete 10 y además recibió los paquetes 12, 13 y 15, envía `ACKN=10` con el payload `[2, 12, 13, 15, 15]`.
+
+Como la ventana es de 16 paquetes, puede haber a lo sumo 15 paquetes fuera de orden y, por lo tanto, como máximo 8 bloques: el payload SACK nunca supera los 17 bytes.
 
 ### 3.3. Flujo y Máquina de Estados de las Operaciones
 
@@ -215,6 +232,109 @@ CLIENTE (Emisor)                                  SERVIDOR (Receptor)
 
 Si durante la fase de negociación el Cliente recibe un paquete con `ERR > 0` ocurre un *FIN implícito* ya que no será posible realizar ninguna transferencia. A diferencia del caso descrito en *3.3.1. Operación UPLOAD con SAW*, el Cliente deberá responder con un `ACK`. El Servidor queda esperando recibir ese paquete READY ACK para finalizar la ejecución de ese hilo. Si recibiese cualquier otro paquete, reenviará el paquete `SYN-ACK` que informa el error. En caso de no recibirse ningún paquete durante un tiempo, se da por finalizada la comunicación.
 
+#### 3.3.3. Operación UPLOAD con SACK
+
+Las fases son las mismas que en SAW (negociación, transferencia y cierre). La diferencia está en la fase de transferencia: el Emisor puede tener hasta **16 paquetes en vuelo** sin esperar confirmación, y el Receptor acepta y guarda los paquetes que llegan fuera de orden en lugar de descartarlos.
+
+En el siguiente diagrama se pierde el paquete 2; los tres ACK duplicados que generan los paquetes 3, 4 y 5 disparan su retransmisión antes de que expire el temporizador (*fast retransmit*):
+
+```
+CLIENTE (Emisor)                                  SERVIDOR (Receptor)
+================                                  ===================
+    |                                                      |
+    | --- SYN [SN=0, ACKN=0, SYN=1, MessageSynUpload] ---> | (Valida tamaño
+    |                                                      |  y existencia)
+    | <-- SYN-ACK [SN=0, ACKN=0, SYN=1, ACK=1, ERR=0] ---- |
+    |                                                      |
+ [Inicia envío]                                     [Crea archivo]
+ (ventana de 16)                                           |
+    | ------- DATA [SN=1, ACKN=0, Chunk 1] --------------> | (Escribe 1)
+    | ------- DATA [SN=2, ACKN=0, Chunk 2] ---X (perdido)  |
+    | ------- DATA [SN=3, ACKN=0, Chunk 3] --------------> | (Guarda 3)
+    | ------- DATA [SN=4, ACKN=0, Chunk 4] --------------> | (Guarda 4)
+    | ------- DATA [SN=5, ACKN=0, Chunk 5] --------------> | (Guarda 5)
+    |                                                      |
+    | <------ ACK [SN=0, ACKN=1, SACK=[]] ---------------- |
+    | <------ ACK [SN=0, ACKN=1, SACK=[3-3]] ------------- | (duplicado 1)
+    | <------ ACK [SN=0, ACKN=1, SACK=[3-4]] ------------- | (duplicado 2)
+    | <------ ACK [SN=0, ACKN=1, SACK=[3-5]] ------------- | (duplicado 3)
+    |                                                      |
+ [Fast retransmit]                                         |
+    | ------- DATA [SN=2, ACKN=0, Chunk 2] --------------> | (Escribe 2 a 5)
+    | <------ ACK [SN=0, ACKN=5, SACK=[]] ---------------- |
+    |                        ...                           |
+    |                                                      |
+    | ------- FIN [SN=k, ACKN=0, FIN=1] -----------------> | (Verifica que
+    | <------ FIN-ACK [SN=0, ACKN=k, FIN=1, ACK=1] ------- |  esté completo)
+    |                                                      |
+ [Cierra socket]                               [Entra en TIME_WAIT (10s)]
+                                               (Reenvía FIN-ACK si llega
+                                                  un FIN retransmitido)
+```
+
+1. **Fase de Negociación:**
+   - El cliente envía `SYN=1` con el `MessageSynUpload`. El servidor realiza las mismas validaciones que en SAW y responde `SYN=1, ACK=1` con el código de error correspondiente (`ERR=0` si no hay error).
+   - El `SYN` se retransmite con *backoff* exponencial (1, 2, 4, 8 y 16 segundos) hasta un máximo de 5 intentos. Si el `SYN-ACK` se pierde y el cliente repite el `SYN`, el servidor reenvía el mismo `SYN-ACK`.
+   - Los paquetes de datos se numeran a partir de $SN_{SYN} + 1$, por lo que el primer paquete de datos tiene `SN=1`.
+2. **Fase de Transferencia (SACK):** se describe en detalle en *3.4. Mecanismos de Confiabilidad*.
+   - El Emisor envía paquetes mientras haya lugar en la ventana, sin esperar confirmación de cada uno.
+   - Por cada paquete recibido (en orden, fuera de orden o duplicado), el Receptor responde con un ACK acumulativo que incluye los bloques SACK de lo que tiene guardado fuera de orden.
+   - Con cada ACK nuevo, la ventana del Emisor se desliza hacia adelante y se pueden enviar paquetes nuevos.
+3. **Fase de Cierre:**
+   - Una vez confirmados todos los paquetes de datos, el cliente envía `FIN=1` con el número de secuencia siguiente al último paquete de datos.
+   - El servidor sólo acepta el `FIN` si su número de secuencia es el próximo que espera recibir y si ya escribió en disco exactamente la cantidad de bytes anunciada en el `MessageSynUpload`, sin paquetes pendientes en el buffer. Si falta algo, responde con su ACK/SACK actual para que el cliente retransmita lo que falta.
+   - Si el archivo está completo, responde `FIN=1, ACK=1`, cierra el archivo y entra en `TIME_WAIT` durante 10 segundos, igual que en SAW.
+
+##### Error en la Fase de Negociación
+
+Si el servidor detecta un error, envía el `SYN-ACK` con `ERR > 0` y finaliza el hilo de esa conexión sin crear el archivo. Al recibirlo, el cliente informa el error y finaliza (*FIN implícito*).
+
+#### 3.3.4. Operación DOWNLOAD con SACK
+
+Igual que en SAW, los roles se invierten: durante la transferencia el Servidor es el Emisor de datos (con la ventana de 16 paquetes) y el Cliente es el Receptor (con el buffer de fuera de orden).
+
+```
+CLIENTE (Emisor)                                  SERVIDOR (Receptor)
+================                                  ===================
+    |                                                      |
+    | -- SYN [SN=0, ACKN=0, SYN=1, MessageSynDownload] --> | (Valida
+    |                                                      |  existencia)
+    | <-- SYN-ACK [SN=0, ACKN=0, SYN=1, ACK=1, ERR=0, ---- |
+    |              MessageSynAckDownload]                  |
+    |                                                      |
+ [Crea archivo]                                            |
+    |                                                      |
+    | ----- READY ACK [SN=0, ACKN=0, ACK=1, SACK=[]] ----> | (Confirmación)
+    |                                                      |
+   (Receptor)                                       [Inicia envío]
+    |                                               (ventana de 16)
+    | <------ DATA [SN=1, ACKN=0, Chunk 1] --------------- |
+    | <------ DATA [SN=2, ACKN=0, Chunk 2] --------------- |
+    | ------- ACK [SN=0, ACKN=1, SACK=[]] ---------------> |
+    | ------- ACK [SN=0, ACKN=2, SACK=[]] ---------------> |
+    |                        ...                           |
+    |                                                      |
+    | <------ FIN [SN=k, ACKN=0, FIN=1] ------------------ |
+    | ------- FIN-ACK [SN=0, ACKN=k, FIN=1, ACK=1] ------> |
+    |                                                      |
+ [Entra en TIME_WAIT (3s)]                           [Cierra hilo]
+ (Reenvía FIN-ACK si llega
+ un FIN retransmitido)
+```
+
+1. **Fase de Negociación y Handshake de 3 Vías:**
+   - El cliente envía `SYN=1` con el `MessageSynDownload`. El servidor valida la existencia del archivo y responde `SYN=1, ACK=1`. A diferencia de SAW, el `SYN-ACK` incluye el `MessageSynAckDownload` con el tamaño del archivo, que el cliente usa para saber cuándo recibió el archivo completo.
+   - Igual que en SAW, el servidor no envía datos hasta recibir el **READY ACK**. En SACK, el READY ACK es el primer ACK acumulativo del Receptor: como todavía no recibió ningún dato, su `ACKN` es el número anterior al primero que espera, es decir, el `SN` del `SYN-ACK` (0), con la lista SACK vacía.
+   - El servidor retransmite el `SYN-ACK` con *backoff* exponencial mientras no llegue el READY ACK. Si el READY ACK se pierde, el cliente recibe un `SYN-ACK` repetido y vuelve a enviar su ACK actual.
+2. **Fase de Transferencia:** idéntica a la de *3.3.3. Operación UPLOAD con SACK*, con el Servidor como Emisor y el Cliente como Receptor.
+3. **Fase de Cierre:**
+   - Una vez confirmados todos los datos, el servidor envía `FIN=1` y lo retransmite hasta recibir el `FIN-ACK`.
+   - El cliente acepta el `FIN` sólo si recibió exactamente la cantidad de bytes anunciada en el `MessageSynAckDownload`. Responde `FIN-ACK`, cierra el archivo y entra en `TIME_WAIT` durante 3 segundos.
+
+##### Error en la Fase de Negociación
+
+Si el archivo no existe, el servidor responde el `SYN-ACK` con `ERR=4` y finaliza el hilo. A diferencia de SAW, el cliente no envía un `ACK` de respuesta: informa el error y finaliza sin crear el archivo local.
+
 ---
 
 ### 3.4. Mecanismos de Confiabilidad
@@ -226,6 +346,49 @@ El protocolo asigna números de secuencia enteros de 8 bits. Cada paquete enviad
 #### Límite de Reintentos y Limpieza de Basura
 
 Los envíos de paquetes que requieren confirmación se limita a **5 intentos consecutivos** de retransmisiones. Si se alcanza el quinto timeout sin respuesta, se asume la caída definitiva del enlace. En ese escenario, tanto el cliente como el servidor eliminan del disco el archivo parcialmente escrito, protegiendo la integridad del sistema de archivos.
+
+#### Ventana Deslizante en SACK
+
+El Emisor mantiene una ventana de **16 paquetes** (`SACK_WINDOW_SIZE`) que comienza en `base`, el paquete más antiguo sin confirmar. Mientras el siguiente número de secuencia a enviar caiga dentro de `[base, base + 15]`, envía un paquete nuevo y lo guarda en un buffer de paquetes no confirmados, por si hay que retransmitirlo.
+
+El tamaño de la ventana cumple la condición de *Selective Repeat*: debe ser como mucho la mitad del espacio de números de secuencia ($16 \le 256 / 2$). De lo contrario, después de que la numeración vuelve a 0, el Receptor no podría distinguir un paquete nuevo de la retransmisión de uno viejo con el mismo número.
+
+Todas las comparaciones de números de secuencia usan aritmética circular: la distancia de `a` a `b` es $(a - b) \bmod 256$, y un número `s` pertenece a la ventana que empieza en `base` si $(s - base) \bmod 256 < 16$.
+
+#### Receptor SACK: Buffer de Paquetes Fuera de Orden
+
+El Receptor mantiene `rcv_nxt`, el próximo número de secuencia que espera, y un buffer de paquetes recibidos fuera de orden. Ante cada paquete de datos:
+
+1. **Es el esperado (`SN = rcv_nxt`):** escribe los datos en disco y avanza `rcv_nxt`. Luego escribe en orden los paquetes del buffer que quedaron contiguos, avanzando `rcv_nxt` por cada uno.
+2. **Está dentro de la ventana pero no es el esperado:** hay un hueco antes de él. Lo guarda en el buffer (si no lo tenía) sin escribirlo.
+3. **Es anterior a `rcv_nxt` (duplicado) o está fuera de la ventana:** lo descarta.
+
+En los tres casos responde con un ACK: `ACKN = rcv_nxt - 1` (el último recibido en orden) y la lista de bloques SACK del buffer. Así el archivo se escribe siempre en orden y cada byte una sola vez, aunque los paquetes lleguen desordenados o duplicados.
+
+#### Emisor SACK: Procesamiento de ACKs
+
+Ante cada ACK recibido, el Emisor:
+
+1. Marca como confirmados por SACK los paquetes de su ventana incluidos en los bloques. Esos paquetes no se retransmiten, pero siguen en el buffer hasta que el ACK acumulativo los alcance.
+2. **Si `ACKN` es nuevo** (pertenece a la ventana): libera todos los paquetes desde `base` hasta `ACKN`, mueve `base` a $ACKN + 1$ y reinicia el temporizador.
+3. **Si `ACKN` es igual al anterior** (ACK duplicado): el Receptor recibió algo posterior a un hueco. Se cuentan los ACK duplicados para la recuperación rápida.
+4. **Si `ACKN` está fuera de la ventana:** es un ACK viejo y se ignora.
+
+#### Recuperación Rápida (*Fast Retransmit* y *Fast Recovery*)
+
+Para no esperar a que expire el temporizador ante cada pérdida, se usan los ACK duplicados como indicio de pérdida:
+
+1. **Fast Retransmit:** al recibir el tercer ACK duplicado, el Emisor retransmite `base`, que es el paquete que bloquea el avance de la ventana. Registra como *punto de recuperación* el último paquete enviado y entra en **Fast Recovery**. Mientras `base` no avance, retransmite `base` de nuevo cada 3 ACK duplicados adicionales.
+2. **Fast Recovery:** cada vez que llega un ACK nuevo durante la recuperación, se buscan los huecos que quedan en la ventana y se retransmiten. Un paquete se considera **hueco** si no fue confirmado (ni por ACK acumulativo ni por SACK). Cada hueco se retransmite como máximo una vez por recuperación.
+3. La recuperación termina cuando `base` supera el punto de recuperación, es decir, cuando se confirmó todo lo que estaba en vuelo al detectarse la pérdida.
+
+#### Timeout y Límite de Reintentos en SACK
+
+Si expira el temporizador sin recibir un ACK nuevo, el Emisor sale de la recuperación rápida, descarta la cuenta de ACK duplicados, retransmite `base` y duplica el timeout. La transferencia se aborta después de **20 timeouts consecutivos** sin ningún ACK nuevo; cualquier ACK nuevo reinicia la cuenta.
+
+Las fases de negociación y cierre (`SYN` y `FIN`) usan, como en SAW, un máximo de **5 intentos** con *backoff* exponencial a partir de 1 segundo.
+
+Por su parte, el Receptor da la conexión por perdida si no recibe ningún paquete durante **10 segundos** (timeout de inactividad). En todos los casos de falla, el Receptor elimina el archivo parcial.
 
 ### 3.5. Temporización Adaptativa
 
@@ -249,11 +412,24 @@ $$\text{Timeout}_{\text{nuevo}} = \min(10.0, \, \text{Timeout}_{\text{actual}} \
 
 Este mecanismo evita saturar un enlace que podría estar atravesando un episodio momentáneo de congestión severa.
 
+#### Temporización en SACK
+
+SACK usa las mismas fórmulas de `EstimatedRTT`, `DevRTT` y RTO, con dos diferencias:
+
+- **Un único temporizador para toda la ventana:** no hay un temporizador por paquete. Se reinicia con cada ACK nuevo (o al vencer), y al expirar se retransmite sólo `base`.
+- **Techo del RTO de 1 segundo:** tanto el cálculo como el *backoff* se limitan a 1 segundo ($\text{RTO} = \min(\text{EstimatedRTT} + 4 \cdot \text{DevRTT}, \, 1)$ y $\text{RTO}_{\text{nuevo}} = \min(2 \cdot \text{RTO}, \, 1)$). El techo es bastante menor que el timeout de inactividad del otro extremo (10 segundos), así que las retransmisiones siguen llegando aunque haya varias pérdidas seguidas.
+
+El RTO inicial de la transferencia es el timeout con el que se completó el `SYN` (1 segundo si el `SYN` se confirmó en el primer intento).
+
+La muestra de RTT se toma como el tiempo transcurrido desde el último reinicio del temporizador hasta la llegada del ACK nuevo. Siguiendo el algoritmo de Karn, se descarta la muestra si hubo una retransmisión en ese intervalo, porque no se puede saber a qué envío corresponde el ACK.
 ---
+
+## 4. Pruebas
 
 ## 5. Preguntas 
 
-1- La arquitectura Cliente-Servidor es un modelo de diseño de software distribuido donde las tareas y la carga de trabajo se dividen entre los proveedores de un recurso o servicio, llamados servidores, y los demandantes de dicho servicio, llamados clientes.
+#### 1- Describa la arquitectura Cliente-Servidor
+La arquitectura Cliente-Servidor es un modelo de diseño de software distribuido donde las tareas y la carga de trabajo se dividen entre los proveedores de un recurso o servicio, llamados servidores, y los demandantes de dicho servicio, llamados clientes.
 
     Cliente: Es el proceso (generalmente iniciado por un usuario final) que solicita recursos o la ejecución de una tarea. No comparte sus recursos con otros nodos y requiere iniciar  la comunicación conectándose al servidor.
 
@@ -267,7 +443,8 @@ Características principales:
 
     Asimetría de la comunicación: La interacción es iniciada por el cliente; el servidor no inicia conexiones hacia el cliente de forma espontánea.
 
-2- El protocolo de la capa de aplicación define las reglas, estructuras de mensajes y secuencias de interacción que utilizan dos aplicaciones de software para comunicarse e intercambiar información a través de una red.
+#### 2- ¿Cuál es la función de un protocolo de capa de aplicación?
+El protocolo de la capa de aplicación define las reglas, estructuras de mensajes y secuencias de interacción que utilizan dos aplicaciones de software para comunicarse e intercambiar información a través de una red.
 
 Sus funciones principales son:
 
@@ -278,8 +455,50 @@ Sus funciones principales son:
     Reglas de sincronización/interacción: Establece la secuencia de pasos o máquina de estados requerida para realizar una tarea (cuándo un extremo debe enviar un mensaje y cómo debe responder el otro).
 
     Representación de datos: Asegura que la información enviada por un sistema sea comprensible para el otro, independientemente de la arquitectura subyacente 
-    
-4- La capa de transporte del stack TCP/IP abstrae la red física ofreciendo comunicación proceso a proceso mediante el uso de puertos. Los dos protocolos principales presentan características contrastantes:
+
+#### 3- Detalle el protocolo de aplicación desarrollado en este trabajo.
+El protocolo de aplicación desarrollado permite transferir archivos de forma confiable sobre UDP, con dos operaciones: UPLOAD (cargar archivos al servidor) y DOWNLOAD (descargar archivos del servidor). Siguiendo la definición de protocolo de capa de aplicación de la pregunta 2, se detallan sus tipos de mensajes, su sintaxis, su semántica y sus reglas de interacción.
+
+**a) Tipos de mensajes**
+
+- **Pedido de UPLOAD:** el cliente solicita subir un archivo al servidor.
+- **Pedido de DOWNLOAD:** el cliente solicita descargar un archivo del servidor.
+- **Respuesta al pedido:** el servidor acepta el pedido o lo rechaza indicando el motivo.
+- **Datos:** fragmentos del contenido del archivo.
+- **Fin de transferencia:** indica que se envió el archivo completo, y su confirmación.
+
+**b) Sintaxis**
+
+Todos los mensajes comparten un encabezado de 3 bytes (número de secuencia, número de ACK y un byte de flags), seguido de un payload cuyo formato depende del tipo de mensaje (ver *3.2*):
+
+- **Pedido de UPLOAD** (`MessageSynUpload`): tamaño del archivo (3 bytes), longitud del nombre (1 byte) y nombre del archivo en UTF-8.
+- **Pedido de DOWNLOAD** (`MessageSynDownload`): longitud del nombre (1 byte) y nombre del archivo en UTF-8.
+- **Respuesta a un pedido de DOWNLOAD con SACK** (`MessageSynAckDownload`): tamaño del archivo (3 bytes).
+- **Datos:** un fragmento del archivo de hasta 1447 bytes.
+- **Resto de las respuestas a pedidos, fin de transferencia y su confirmación:** sin payload.
+
+**c) Semántica**
+
+- **Bit `OP`:** operación solicitada (`1` = UPLOAD, `0` = DOWNLOAD).
+- **Bit `TY`:** mecanismo de transferencia confiable elegido por el cliente (`0` = Stop and Wait, `1` = SACK).
+- **Bit `SYN`:** identifica el pedido y su respuesta.
+- **Bit `FIN`:** indica el fin del archivo.
+- **Bits de error:** resultado del pedido o de la transferencia: `0` sin error, `1` nombre de archivo inválido, `2` el archivo ya existe, `3` el archivo supera los 15 MiB, `4` el archivo no existe y `7` error de lectura o escritura en disco.
+
+Los números de secuencia y de ACK y el bit `ACK` no tienen significado para la aplicación: los usa el mecanismo de transferencia confiable para garantizar la entrega de los mensajes (ver *3.4* y *3.5*).
+
+**d) Reglas de interacción**
+
+1. El cliente siempre inicia la comunicación enviando un pedido de UPLOAD o de DOWNLOAD. El servidor nunca inicia una comunicación.
+2. El servidor valida el pedido: en UPLOAD, que el archivo no exista y no supere el tamaño máximo; en DOWNLOAD, que el archivo exista. Si el pedido no es válido, responde con el código de error correspondiente y la operación finaliza sin transferir datos.
+3. Si el pedido es válido, quien tiene el archivo (el cliente en UPLOAD, el servidor en DOWNLOAD) envía su contenido en fragmentos, que el receptor escribe en disco en orden.
+4. Una vez enviado todo el contenido, el emisor envía el fin de transferencia. El receptor sólo lo acepta si recibió el archivo completo y, en ese caso, lo confirma.
+5. Si la transferencia no puede completarse, el receptor elimina el archivo parcial, de modo que nunca queda en disco un archivo incompleto.
+
+El detalle de cada intercambio para cada operación y mecanismo se describe en *3.3*.
+
+####  4- Lacapadetransporte del stack TCP/IP ofrece dos protocolos: TCP y UDP. ¿Qué servicios proveen dichos protocolos? ¿Cuáles son sus características? ¿Cuándo es apropiado utilizar cada uno?
+La capa de transporte del stack TCP/IP abstrae la red física ofreciendo comunicación proceso a proceso mediante el uso de puertos. Los dos protocolos principales presentan características contrastantes:
 TCP (Transmission Control Protocol)
 
     Servicios que provee:
@@ -333,6 +552,13 @@ UDP (User Datagram Protocol)
 
         Ejemplos: Streaming de video/audio en vivo, videojuegos multijugador, consultas DNS, VoIP.
 
+#### 5- Justifique si el protocolo desarrollado cuenta con mecanismos de control de congestión, en caso de tenerlos, descríbalos.
+El protocolo desarrollado no cuenta con un algoritmo de control de congestión ni de control de flujo. Sí se provee un mecanismo de ventana deslizante, pero que es propio de SACK y no es una estrategia de control de flujo ni de congestión. La ventana tiene un tamaño fijo de 16 paquetes, que no se ajusta según el estado de la red (no se reduce ante pérdidas) o según la capacidad del receptor.
+
+#### 6- ¿Cuál de los dos protocolos desarrollados envía archivos en la menor cantidad de tiempo? ¿Es siempre el mismo?
+En todas las pruebas realizadas, SACK envió los archivos en menos tiempo que Stop and Wait. Esto se debe a que SAW tiene un único paquete en vuelo, por lo que envía como máximo un paquete por RTT, mientras que SACK puede tener hasta 16 paquetes en vuelo y, ante una pérdida, sigue enviando el resto de la ventana.
+Sin embargo para archivos muy pequeños,que entran en uno o pocos paquetes, ambos protocolos tardan prácticamente lo mismo.
+
 ---        
 
 ## 6. Dificultades Encontradas
@@ -354,6 +580,7 @@ A lo largo del diseño, implementación y prueba del sistema se sortearon divers
 5. **Abstracciones y Simetría:**
    - Las operaciones UPLOAD y DOWNLOAD son operaciones simétricas. En UPLOAD el Cliente es *Emisor* de datos y el Servidor es *Receptor* de datos, y en DOWNLOAD el Cliente es *Receptor* de datos y el Servidor es *Emisor* de datos. Se deseaba que esa simetría se respete en la implementación.
    - **Solución implementada:** Se desarrolló la abstracción `Channel`, que es capaz de enviar y recibir paquetes, además de gestionar los números de secuencias recibidos y enviados, sus incrementos mediante aritmética modular y ser capaz de reeenviar el último mensaje enviado. Se implementaron dos clases concretas `ServerChannel` (un canal hacia el servidor, donde todos los paquetes se envían y reciben a través de un mismo socket) y `ClientChannel` (un canal hacia el cliente, donde los paquetes se envían a través de un socket y se reciben mediante una cola)
+   - En SACK la misma idea se llevó a las clases `SackSender` (Emisor) y `SackReceiver` (Receptor), que operan sobre un `Channel` sin saber si son cliente o servidor. En UPLOAD el cliente usa `SackSender` y el servidor `SackReceiver`; en DOWNLOAD se intercambian. De esta forma, la lógica de ventana, SACK y recuperación es la misma en ambas operaciones.
 
 ---
 
