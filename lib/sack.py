@@ -264,7 +264,7 @@ class SackSender:
         como máximo una vez por recuperación.
         """
         for seq in self._huecos():
-            if seq == self.base or seq in self.fast_retransmitted:
+            if seq in self.fast_retransmitted:
                 continue
             logging.debug(f"{self.tag}" +
                           f"[FAST-RECOVERY] Hueco detectado: SEQ={seq}")
@@ -347,7 +347,7 @@ class SackSender:
 
             # Cada grupo de 3 ACK duplicados genera una retransmisión de BASE,
             # aunque ya estemos en recovery (base no avanzó).
-            if self.dup_ack_count % 3 == 0:
+            if self.dup_ack_count == 3:
                 if not self.in_recovery:
                     self._start_fast_recovery()
                 else:
