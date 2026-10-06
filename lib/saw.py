@@ -125,7 +125,7 @@ def receive_file(channel: Channel, dest_path, stop_event: threading.Event):
                         error_code = ERR_IO_INTERNO  # Error IO Interno
 
                 packet = Packet(
-                    sequence_number=channel.get_next_sequence_number_to_send(),
+                    sequence_number=0,
                     ack_number=packet_received.header.sequence_number,
                     flags=HeaderFlags(
                         packet_received.header.flags.type, packet_received.header.flags.operation,

@@ -72,7 +72,7 @@ def upload_client_handler(channel: Channel, storage_path, stop_event: threading.
     error = validar_upload(file_size, file_path)
 
     packet = Packet(
-        channel.get_next_sequence_number_to_send(),
+        0,
         packet_received.header.sequence_number,
         HeaderFlags(
             packet_received.header.flags.type,

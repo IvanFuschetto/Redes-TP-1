@@ -7,7 +7,7 @@ from protocolo import Packet, HEADER_SIZE, MAX_PAYLOAD
 
 def get_next_sequence_number(sequence_number) -> int:
     if sequence_number is None:
-        return 1
+        return 0
     return (sequence_number + 1) % 256
 
 

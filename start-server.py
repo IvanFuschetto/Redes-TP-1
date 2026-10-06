@@ -34,6 +34,7 @@ def main():
 
     try:
         while True:
+            clean_conexiones(conexiones)
             try:
                 packet_bytes, address = sock.recvfrom(MAX_PACKET_SIZE)
                 packet = Packet.deserialize(packet_bytes)

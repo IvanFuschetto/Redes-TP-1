@@ -1,5 +1,6 @@
 import socket
 import logging
+import time
 
 from parser import download_parse_args
 from protocolo import HeaderFlags
@@ -37,6 +38,7 @@ def main():
     logger = logging.getLogger(__name__)
     server_address = (args.host, args.port)
     dest_filename = args.dst if args.dst else args.name
+    timer = time.monotonic()
     logger.info(f"Preparando transferencia de {args.name} desde {args.host}:{args.port} a {dest_filename}")
 
     if args.protocol == "stop-and-wait":
@@ -54,6 +56,7 @@ def main():
         raise e
 
     logger.info(f"Ejecución finalizada")
+    print(f"Tiempo total de transferencia: {time.monotonic() - timer:.2f} segundos")    
 
 
 if __name__ == "__main__":

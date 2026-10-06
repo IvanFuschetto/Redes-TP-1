@@ -1,6 +1,7 @@
 import socket
 import os
 import logging
+import time
 
 from parser import upload_parse_args
 from protocolo import (
@@ -40,6 +41,7 @@ def main():
         format='%(levelname)s: %(message)s',
     )
     logger = logging.getLogger(__name__)
+    timer = time.monotonic()
     logger.info(f"Preparando transferencia de {args.src} a {args.host}:{args.port}")
     server_address = (args.host, args.port)
     dest_filename = args.name if args.name else os.path.basename(args.src)
@@ -59,6 +61,7 @@ def main():
         logger.critical(f"{e}")
 
     logger.info(f"Ejecución finalizada")
+    print(f"Tiempo total de transferencia: {time.monotonic() - timer:.2f} segundos")
 
 if __name__ == "__main__":
     main()

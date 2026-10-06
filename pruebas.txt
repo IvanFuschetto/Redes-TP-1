@@ -1,0 +1,20 @@
+1) topologia.py --delay 40ms --loss 5
+
+    tamaño de archivo enviado:  (2398 de paquetes de 1447 bytes de payload) --> 3469906 bytes 
+    
+    saw =  540,49 segundos 
+    sack = 36.19 segundos 
+
+2) topologia.py --delay 15ms --loss 10
+    
+    tamaño de archivo enviado: (768 paquetes de 1447 bytes de payload) --> 1111296 bytes
+
+    saw =  
+    sack = 49,11 segundos 
+
+3) topologia.py --delay 5ms --loss 2
+
+    tamaño de archivo enviado: (10 paquetes de 1447 bytes de payload) --> 14470 bytes
+
+    saw =  21.66 segundos 
+    sack = 0.15 segundos 

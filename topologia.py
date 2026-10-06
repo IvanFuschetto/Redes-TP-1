@@ -12,7 +12,7 @@ class CustomTopo(Topo):
         s1 = self.addSwitch('s1')
 
         server = self.addHost('server', ip='10.0.0.100/8')
-        self.addLink(server, s1, cls=TCLink)
+        self.addLink(server, s1, cls=TCLink, loss=loss, delay=delay)
 
         for i in range(1, num_hosts + 1):
             h_name = f'h{i}'
