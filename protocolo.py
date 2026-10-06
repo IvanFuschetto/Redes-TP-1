@@ -32,15 +32,15 @@ ERR_INVALID_NAME = 1
 ERR_FILE_EXISTS = 2
 ERR_FILE_TOO_BIG = 3
 ERR_FILE_NOT_EXISTS = 4
-ERR_UNEXPECTED = 7
-
+ERR_IO_INTERNO = 7
+ 
 ERRORES_DESC = {
     ERR_NONE: "sin error",
     ERR_INVALID_NAME: "nombre de archivo invalido",
     ERR_FILE_EXISTS: "el archivo ya existe en el servidor",
     ERR_FILE_TOO_BIG: "el archivo es demasiado grande",
     ERR_FILE_NOT_EXISTS: "el archivo no existe en el servidor",
-    ERR_UNEXPECTED: "error inesperado en el servidor",
+    ERR_IO_INTERNO: "error IO interno",
 }
  
  

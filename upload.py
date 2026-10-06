@@ -3,10 +3,13 @@ import os
 import logging
 
 from parser import upload_parse_args
-from protocolo import HeaderFlags
-from lib.channels import ServerChannel
+from protocolo import (
+    ERRORES_DESC, Packet, HeaderFlags,
+    MessageSynUpload
+)
+from lib.channels import Channel, ServerChannel
+from lib.saw_client import upload as upload_saw
 from lib.sack_client import upload as upload_sack
-from client import upload_stop_and_wait
 
 def upload(server_address, protocol, source_path, dest_filename):
     logging.getLogger(__name__)
@@ -19,7 +22,8 @@ def upload(server_address, protocol, source_path, dest_filename):
     try:
         match protocol:
             case HeaderFlags.Type.SAW:
-                upload_stop_and_wait(sock, server_address, source_path, dest_filename)
+                channel = ServerChannel(sock, server_address)
+                upload_saw(channel, source_path, dest_filename)
             case HeaderFlags.Type.SACK:
                 channel = ServerChannel(sock, server_address)
                 upload_sack(channel, source_path, dest_filename)

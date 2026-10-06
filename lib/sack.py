@@ -16,7 +16,7 @@ import time
 
 from .channels import Channel
 from protocolo import Packet, HeaderFlags, SackPayload, SequenceNumber, compute_sack_blocks, MAX_SEQ, \
-    MAX_PAYLOAD, SACK_WINDOW_SIZE, ERR_NONE, ERR_UNEXPECTED, ERRORES_DESC
+    MAX_PAYLOAD, SACK_WINDOW_SIZE, ERR_NONE, ERR_IO_INTERNO, ERRORES_DESC
 
 MAX_TIMEOUTS_CONSECUTIVOS = 20
 MAX_RTO = 1.0  # Tope del timeout de retransmisión (segundos). Debe ser bastante menor al timeout de inactividad del servidor (10s)
@@ -495,7 +495,7 @@ class SackReceiver:
             self.bytes_written += len(data)
         except Exception as e:
             logging.error(f"{self.channel.address}: Error al escribir en el archivo {self.file_path}: {e}")
-            self.error = ERR_UNEXPECTED
+            self.error = ERR_IO_INTERNO
 
     def send_ack(self):
         """Envía el ACK acumulativo (último SEQ en orden) con los bloques SACK."""

@@ -5,6 +5,7 @@ from parser import download_parse_args
 from protocolo import HeaderFlags
 from lib.channels import ServerChannel
 from lib.sack_client import download as download_sack
+from lib.saw_client import download as download_saw
 
 
 def download(server_address, protocol, filename_server, dest_filename):
@@ -15,7 +16,8 @@ def download(server_address, protocol, filename_server, dest_filename):
     try:
         match protocol:
             case HeaderFlags.Type.SAW:
-                raise NotImplementedError("Protocolo Stop and Wait no implementado para DOWNLOAD.")
+                channel = ServerChannel(sock, server_address)
+                download_saw(channel, filename_server, dest_filename)
             case HeaderFlags.Type.SACK:
                 channel = ServerChannel(sock, server_address)
                 download_sack(channel, filename_server, dest_filename)
@@ -49,6 +51,7 @@ def main():
         download(server_address, protocol, args.name, dest_filename)
     except Exception as e:
         logger.critical(f"{e}")
+        raise e
 
     logger.info(f"Ejecución finalizada")
 
