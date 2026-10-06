@@ -1,18 +1,3 @@
--- Disector de Wireshark para el protocolo RDT (SACK / Selective Repeat)
--- Mismo header de 3 bytes que saw.lua (Seq, Ack, Flags), pero interpreta
--- el payload segun el protocolo SACK:
---   * SYN  UPLOAD   -> MessageSynUpload   (file_size[3] + fn_len[1] + file_name)
---   * SYN  DOWNLOAD -> MessageSynDownload (fn_len[1] + file_name)
---   * SYN+ACK DOWNLOAD -> MessageSynAckDownload (file_size[3])
---   * ACK (sin SYN/FIN) con payload -> SackPayload (N[1] + N * (start[1], end[1]))
---   * resto -> datos del archivo
---
--- Uso: wireshark -X lua_script:sack.lua
--- o copiarlo a ~/.local/lib/wireshark/plugins/ y reiniciar Wireshark.
--- El puerto UDP se cambia en Edit > Preferences > Protocols > SACK.
--- Este script distingue SAW y SACK por el bit 7 del byte de flags, asi que
--- reemplaza a saw.lua: NO cargues los dos a la vez en el mismo puerto
--- (se pisan y gana el ultimo en cargarse). Saca saw.lua del directorio de plugins.
 
 local rdt = Proto("SACK", "SACK Protocol")
 
