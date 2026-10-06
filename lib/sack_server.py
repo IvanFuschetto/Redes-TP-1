@@ -23,7 +23,7 @@ def upload_client_handler(channel: Channel, storage_path, stop_event: threading.
         return
 
     message = MessageSynUpload.deserialize(syn_packet.payload)
-    file_path = os.path.join("storage", message.file_name)
+    file_path = os.path.join(storage_path, message.file_name)
     error = validar_upload(message.file_size, file_path)
 
     syn_ack_packet = Packet(
@@ -66,7 +66,7 @@ def download_client_handler(channel: Channel, storage_path, stop_event: threadin
         return
 
     message = MessageSynDownload.deserialize(syn_packet.payload)
-    file_path = os.path.join("storage", message.file_name)
+    file_path = os.path.join(storage_path, message.file_name)
     error = validar_download(file_path)
 
     syn_ack_packet = Packet(
