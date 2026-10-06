@@ -251,6 +251,90 @@ Este mecanismo evita saturar un enlace que podría estar atravesando un episodio
 
 ---
 
+## 5. Preguntas 
+
+1- La arquitectura Cliente-Servidor es un modelo de diseño de software distribuido donde las tareas y la carga de trabajo se dividen entre los proveedores de un recurso o servicio, llamados servidores, y los demandantes de dicho servicio, llamados clientes.
+
+    Cliente: Es el proceso (generalmente iniciado por un usuario final) que solicita recursos o la ejecución de una tarea. No comparte sus recursos con otros nodos y requiere iniciar  la comunicación conectándose al servidor.
+
+    Servidor: Es un proceso centralizado pasivo que se ejecuta continuamente (en modo escucha ), esperando solicitudes de los clientes. Procesa las peticiones entrantes, ejecuta la lógica de negocio o acceso a datos y devuelve una respuesta.
+
+Características principales:
+
+    Centralización: La gestión de recursos, datos y seguridad suele centralizarse en el servidor.
+
+    Desacoplamiento e Independencia: Clientes y servidores son procesos independientes que interactúan únicamente mediante una interfaz definida (protocolo), permitiendo cambiar la implementación de uno sin afectar al otro.
+
+    Asimetría de la comunicación: La interacción es iniciada por el cliente; el servidor no inicia conexiones hacia el cliente de forma espontánea.
+
+2- El protocolo de la capa de aplicación define las reglas, estructuras de mensajes y secuencias de interacción que utilizan dos aplicaciones de software para comunicarse e intercambiar información a través de una red.
+
+Sus funciones principales son:
+
+    Sintaxis de los mensajes: Define la estructura externa y el formato de los datos transferidos (por ejemplo, cómo se separan los encabezados del cuerpo, campos de texto o binarios).
+
+    Semántica de los mensajes: Define el significado exacto de cada campo, comando o código de estado enviado (ej. códigos de error, tipo de operación como UPLOAD o DOWNLOAD).
+
+    Reglas de sincronización/interacción: Establece la secuencia de pasos o máquina de estados requerida para realizar una tarea (cuándo un extremo debe enviar un mensaje y cómo debe responder el otro).
+
+    Representación de datos: Asegura que la información enviada por un sistema sea comprensible para el otro, independientemente de la arquitectura subyacente 
+    
+4- La capa de transporte del stack TCP/IP abstrae la red física ofreciendo comunicación proceso a proceso mediante el uso de puertos. Los dos protocolos principales presentan características contrastantes:
+TCP (Transmission Control Protocol)
+
+    Servicios que provee:
+
+        Orientado a conexión: Requiere un establecimiento formal de enlace (three-way handshake ) antes del intercambio de datos y un cierre ordenado.
+
+        Entrega confiable: Garantiza que todos los bytes lleguen a destino sin errores, sin duplicados y en el orden exacto en que fueron enviados.
+
+        Control de flujo: Evita que el emisor sature al receptor ajustando la velocidad de envío según el buffer disponible (Ventana deslizante).
+
+        Control de congestión: Modula la tasa de transferencia en función de la capacidad de la red global para prevenir el colapso por congestión.
+
+    Características:
+
+        Basado en flujo de bytes (byte-stream), no preserva límites de mensajes.
+
+        Mayor sobrecarga (overhead) debido a encabezados de mayor tamaño (20 bytes o más) y mantenimiento de estado de conexión.
+
+    Cuándo utilizarlo:
+
+        Cuando la integridad y exactitud de los datos es crítica y no se puede tolerar ninguna pérdida de información.
+
+        Ejemplos: Web (HTTP/HTTPS), transferencia de archivos (FTP), correo electrónico (SMTP), terminales remotas (SSH).
+
+UDP (User Datagram Protocol)
+
+    Servicios que provee:
+
+        Servicio básico sin conexión: No realiza handshake ni mantiene estado de conexión en los extremos.
+
+        Multiplexación/Desmultiplexación por puertos: Asigna mensajes a aplicaciones específicas basándose en sockets/puertos.
+
+        Detección básica de errores: Verificación opcional mediante la suma de comprobación (checksum).
+
+    Características:
+
+        Orientado a datagramas: Preserva los límites explícitos de los mensajes enviándolos como unidades independientes.
+        No confiable: No garantiza la entrega, el orden de llegada ni previene la duplicación de paquetes.
+
+        Mínima sobrecarga: Encabezados pequeños (8 bytes) y nula latencia en el establecimiento de conexión.
+
+        Otorga control total a la capa de aplicación sobre el envío de paquetes.
+
+    Cuándo utilizarlo:
+
+        En aplicaciones en tiempo real donde prima la baja latencia por sobre la retransmisión de datos perdidos.
+
+        Cuando se prefiere implementar un protocolo a medida con mecanismos propios de confiabilidad y control de flujo en la capa de aplicación .
+
+        Para mensajes breves tipo consulta-respuesta que caben en un único paquete.
+
+        Ejemplos: Streaming de video/audio en vivo, videojuegos multijugador, consultas DNS, VoIP.
+
+---        
+
 ## 6. Dificultades Encontradas
 
 A lo largo del diseño, implementación y prueba del sistema se sortearon diversas dificultades técnicas relevantes:
