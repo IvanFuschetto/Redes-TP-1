@@ -30,7 +30,8 @@ def run(num_hosts, delay, loss):
 
     info('*** Red Iniciada. El servidor es 10.0.0.100\n')
     info(f'*** Se crearon {num_hosts} clientes (h1 a h{num_hosts})\n')
-    info(f'*** Todos los enlaces tienen un delay de {delay} y {loss}% de pérdida\n')
+    info('*** Todos los enlaces '
+         f'tienen un delay de {delay} y {loss}% de pérdida\n')
 
     CLI(net)
 
@@ -39,10 +40,21 @@ def run(num_hosts, delay, loss):
 
 if __name__ == '__main__':
     setLogLevel('info')
-    parser = argparse.ArgumentParser(description="Topología parametrizada de Mininet")
-    parser.add_argument('--hosts', type=int, default=4, help='Cantidad de hosts clientes (por defecto: 4)')
-    parser.add_argument('--delay', type=str, default='75ms', help='Delay de los enlaces (por defecto: 75ms)')
-    parser.add_argument('--loss', type=float, default=5.0, help='Porcentaje de pérdida de paquetes (por defecto: 5)')
+    parser = argparse.ArgumentParser(
+        description="Topología parametrizada de Mininet")
+    parser.add_argument('--hosts',
+                        type=int,
+                        default=4,
+                        help='Cantidad de hosts clientes (por defecto: 4)')
+    parser.add_argument('--delay',
+                        type=str,
+                        default='75ms',
+                        help='Delay de los enlaces (por defecto: 75ms)')
+    parser.add_argument('--loss',
+                        type=float,
+                        default=5.0,
+                        help='Porcentaje de pérdida '
+                             'de paquetes (por defecto: 5)')
 
     args = parser.parse_args()
 

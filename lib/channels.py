@@ -44,7 +44,9 @@ class Channel(ABC):
 
     def settimeout_by_rtt(self, rtt: float) -> None:
         self.rtt_estimated = 0.875 * self.rtt_estimated + 0.125 * abs(rtt)
-        self.rtt_deviation = 0.75 * self.rtt_deviation + 0.25 * abs(rtt - self.rtt_estimated)
+        self.rtt_deviation = (
+            0.75 * self.rtt_deviation + 0.25 * abs(rtt - self.rtt_estimated)
+        )
         self._timeout = self.rtt_estimated + 4 * self.rtt_deviation
         self.settimeout(self._timeout)
 
@@ -106,7 +108,8 @@ class ServerChannel(Channel):
     def recv(self) -> Packet:
         respuesta_bytes, _ = self.sock.recvfrom(HEADER_SIZE + MAX_PAYLOAD)
         packet = Packet.deserialize(respuesta_bytes)
-        self._update_last_sequence_number_received(packet.header.sequence_number)
+        self._update_last_sequence_number_received(
+            packet.header.sequence_number)
         return packet
 
     def _settimeout(self, timeout: float) -> None:
@@ -123,7 +126,10 @@ class ClientChannel(Channel):
     Permite enviar paquetes a través de un socket UDP y
     recibir paquetes a través de una Cola, y configurar un timeout.
     """
-    def __init__(self, sender_socket: socket.socket, receiver_queue: Queue, client_address):
+    def __init__(self,
+                 sender_socket: socket.socket,
+                 receiver_queue: Queue,
+                 client_address):
         self.sender_socket = sender_socket
         self.receiver_queue = receiver_queue
         self.client_address = client_address
@@ -136,7 +142,8 @@ class ClientChannel(Channel):
 
     def recv(self) -> Packet:
         packet = self.receiver_queue.get(block=True, timeout=self._timeout)
-        self._update_last_sequence_number_received(packet.header.sequence_number)
+        self._update_last_sequence_number_received(
+            packet.header.sequence_number)
         return packet
 
     def _settimeout(self, timeout: float) -> None:

@@ -2,13 +2,16 @@ import logging
 import os.path
 import threading
 
-from protocolo import Packet, MessageSynUpload, HeaderFlags, MessageSynDownload
+from protocolo import Packet, MessageSynUpload, \
+    HeaderFlags, MessageSynDownload
 from lib.channels import Channel
 from lib.saw import receive_file, send_file
 from lib.validators import validar_upload, validar_download
 
 
-def download_client_handler(channel: Channel, storage_path, stop_event: threading.Event):
+def download_client_handler(channel: Channel,
+                            storage_path,
+                            stop_event: threading.Event):
     # Timeout de 5 seg en la lectura del channel
     channel.settimeout(5)
 
@@ -48,18 +51,25 @@ def download_client_handler(channel: Channel, storage_path, stop_event: threadin
     if not error:
         # READY FOR SENDING FILE
         try:
-            finished = send_file(channel, file_path, HeaderFlags.Operation.DOWNLOAD)
+            finished = send_file(channel,
+                                 file_path,
+                                 HeaderFlags.Operation.DOWNLOAD)
             if finished:
-                logging.info(f"Transferencia a {channel.address} finalizada exitosamente")
+                logging.info(f"Transferencia a {channel.address} "
+                             "finalizada exitosamente")
                 return
         except TimeoutError as e:
-            logging.info(f"Transferencia a {channel.address} finalizada con problemas: {e}")
+            logging.info(f"Transferencia a {channel.address} "
+                         f"finalizada con problemas: {e}")
 
     else:
-        logging.info(f"Transferencia a {channel.address} finalizada con problemas")
+        logging.info(f"Transferencia a {channel.address} "
+                     "finalizada con problemas")
 
 
-def upload_client_handler(channel: Channel, storage_path, stop_event: threading.Event):
+def upload_client_handler(channel: Channel,
+                          storage_path,
+                          stop_event: threading.Event):
     # Timeout de 5 seg en la lectura del channel
     channel.settimeout(5)
 
@@ -107,4 +117,5 @@ def upload_client_handler(channel: Channel, storage_path, stop_event: threading.
         except channel.TimeoutError:
             break
 
-    logging.info(f"Transferencia de {channel.address} finalizada exitosamente")
+    logging.info(f"Transferencia de {channel.address} "
+                 "finalizada exitosamente")

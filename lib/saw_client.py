@@ -2,10 +2,12 @@ import logging
 import os
 import threading
 
-from protocolo import ERRORES_DESC, Packet, HeaderFlags, MessageSynUpload, MessageSynDownload
+from protocolo import ERRORES_DESC, Packet, HeaderFlags, \
+    MessageSynUpload, MessageSynDownload
 
 from .channels import Channel
 from .saw import try_send, send_file, receive_file
+
 
 def upload(channel: Channel, source_path, dest_filename):
     """
@@ -14,7 +16,7 @@ def upload(channel: Channel, source_path, dest_filename):
     El nombre del archivo en el servidor será `dest_filename`.
     """
 
-    ### SYN: START
+    # SYN: START
     sequence_number = channel.get_next_sequence_number_to_send()
     packet = Packet(
         sequence_number=sequence_number,
@@ -31,9 +33,10 @@ def upload(channel: Channel, source_path, dest_filename):
     )
     respuesta = try_send(channel, packet)
     if respuesta.header.flags.error:
-        logging.error(f"({respuesta.header.flags.error}) {ERRORES_DESC[respuesta.header.flags.error]}")
+        logging.error(f"({respuesta.header.flags.error}) "
+                      f"{ERRORES_DESC[respuesta.header.flags.error]}")
         return
-    ### SYN: FINISH
+    # SYN: FINISH
     try:
         if send_file(channel, source_path, HeaderFlags.Operation.UPLOAD):
             logging.info("Transferencia finalizada correctamente.")
@@ -49,7 +52,7 @@ def download(channel: Channel, filename_server, dest_filename):
     en el cliente desde el Servidor.
     El nombre del archivo en el cliente será `dest_filename`.
     """
-    ### SYN: START
+    # SYN: START
     sequence_number = channel.get_next_sequence_number_to_send()
     packet = Packet(
         sequence_number=sequence_number,
@@ -65,7 +68,7 @@ def download(channel: Channel, filename_server, dest_filename):
     )
     respuesta = try_send(channel, packet)
 
-    ### READY ACK
+    # READY ACK
     packet = Packet(
         sequence_number=channel.get_next_sequence_number_to_send(),
         ack_number=respuesta.header.sequence_number,
@@ -76,16 +79,17 @@ def download(channel: Channel, filename_server, dest_filename):
         ),
     )
     channel.send(packet)
-    ### SYN: FINISH
+    # SYN: FINISH
 
     if respuesta.header.flags.error:
-        logging.error(f"({respuesta.header.flags.error}) {ERRORES_DESC[respuesta.header.flags.error]}")
+        logging.error(f"({respuesta.header.flags.error}) "
+                      f"{ERRORES_DESC[respuesta.header.flags.error]}")
         return
 
     stop_event = threading.Event()
     try:
         receive_file(channel, dest_filename, stop_event)
-        logging.debug(f"Recepción finalizada.")
+        logging.debug("Recepción finalizada.")
     except TimeoutError as e:
         logging.error(f"Recepción fallida: {e}")
         # Eliminamos el archivo recibido parcialmente

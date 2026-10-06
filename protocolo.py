@@ -10,13 +10,13 @@ Header = 3 bytes
         bit 3: FIN
         bits 2-0: codigo de error (3 bits -> 0 a 7)
 """
-from email.header import Header
 from enum import Enum
 
 HEADER_SIZE = 3
 MAX_PAYLOAD = 1447
 MAX_PACKET_SIZE = HEADER_SIZE + MAX_PAYLOAD
-MTU = HEADER_SIZE + MAX_PAYLOAD + 20 + 8  # 20 bytes IP header + 8 bytes UDP header
+# 20 bytes IP header + 8 bytes UDP header
+MTU = HEADER_SIZE + MAX_PAYLOAD + 20 + 8
 
 # posiciones de cada bit dentro del byte de flags
 BIT_SACK = 7
@@ -25,7 +25,7 @@ BIT_ACK = 5
 BIT_SYN = 4
 BIT_FIN = 3
 ERROR_MASK = 0b00000111  # bits 2,1,0
- 
+
 # codigos de error (van en los 3 bits bajos del byte de flags)
 ERR_NONE = 0
 ERR_INVALID_NAME = 1
@@ -33,7 +33,7 @@ ERR_FILE_EXISTS = 2
 ERR_FILE_TOO_BIG = 3
 ERR_FILE_NOT_EXISTS = 4
 ERR_IO_INTERNO = 7
- 
+
 ERRORES_DESC = {
     ERR_NONE: "sin error",
     ERR_INVALID_NAME: "nombre de archivo invalido",
@@ -42,8 +42,8 @@ ERRORES_DESC = {
     ERR_FILE_NOT_EXISTS: "el archivo no existe en el servidor",
     ERR_IO_INTERNO: "error IO interno",
 }
- 
- 
+
+
 def build_flags(sack=0, updown=0, ack=0, syn=0, fin=0, error=ERR_NONE):
     """Arma el byte de flags a partir de cada campo individual."""
     flags = 0
@@ -55,6 +55,7 @@ def build_flags(sack=0, updown=0, ack=0, syn=0, fin=0, error=ERR_NONE):
     flags |= (error & ERROR_MASK)
     return flags & 0xFF
 
+
 def parse_flags(flags_byte):
     """Devuelve un dict con cada campo del byte de flags ya separado."""
     return {
@@ -65,14 +66,14 @@ def parse_flags(flags_byte):
         "fin": (flags_byte >> BIT_FIN) & 1,
         "error": flags_byte & ERROR_MASK,
     }
- 
- 
+
+
 def make_packet(seq, ack_num, flags_byte, payload=b""):
     """Arma el paquete completo: header (3 bytes) + payload."""
     header = bytes([seq & 0xFF, ack_num & 0xFF, flags_byte & 0xFF])
     return header + payload
- 
- 
+
+
 def parse_packet(data):
     """Separa un paquete recibido en (seq, ack_num, flags_byte, payload)."""
     seq = data[0]
@@ -80,8 +81,6 @@ def parse_packet(data):
     flags_byte = data[2]
     payload = data[HEADER_SIZE:]
     return seq, ack_num, flags_byte, payload
-
-
 
 
 class HeaderFlags:
@@ -93,7 +92,13 @@ class HeaderFlags:
         DOWNLOAD = 0
         UPLOAD = 1
 
-    def __init__(self, type: Type, operation: Operation, ack: bool, syn: bool, fin: bool, error: int = 0):
+    def __init__(self,
+                 type: Type,
+                 operation: Operation,
+                 ack: bool,
+                 syn: bool,
+                 fin: bool,
+                 error: int = 0):
         if not isinstance(error, int) or not 0 <= error <= 7:
             raise ValueError(f"El valor de error no es valido: {error}")
         self.type = type
@@ -126,28 +131,92 @@ class HeaderFlags:
     def __eq__(self, other):
         if not isinstance(other, HeaderFlags):
             return False
-        return self.type == other.type and self.operation == other.operation and self.ack == other.ack and self.syn == other.syn and self.fin == other.fin and self.error == other.error
+        return (
+            self.type == other.type
+            and
+            self.operation == other.operation
+            and
+            self.ack == other.ack
+            and
+            self.syn == other.syn
+            and
+            self.fin == other.fin
+            and
+            self.error == other.error
+            )
 
     def __str__(self):
-        return f"(TY={self.type.name},OP={self.operation.name[0]},ACK={int(self.ack)},SYN={int(self.syn)},FIN={int(self.fin)},ERR={self.error})"
+        return (
+               f"(TY={self.type.name},OP={self.operation.name[0]},"
+               f"ACK={int(self.ack)},SYN={int(self.syn)},"
+               f"FIN={int(self.fin)},ERR={self.error})"
+        )
 
 
 def test_HeaderFlags_serialize():
-    assert HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.UPLOAD, True, False, True).serialize() == 0b01101000.to_bytes(length=1, byteorder='big')
-    assert HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.DOWNLOAD, True, False, True, 1).serialize() == 0b00101001.to_bytes(length=1, byteorder='big')
-    assert HeaderFlags(HeaderFlags.Type.SACK, HeaderFlags.Operation.UPLOAD, True, False, True, 3).serialize() == 0b11101011.to_bytes(length=1, byteorder='big')
+    assert HeaderFlags(HeaderFlags.Type.SAW,
+                       HeaderFlags.Operation.UPLOAD,
+                       True,
+                       False,
+                       True
+                       ).serialize() == 0b01101000.to_bytes(length=1,
+                                                            byteorder='big')
+    assert HeaderFlags(HeaderFlags.Type.SAW,
+                       HeaderFlags.Operation.DOWNLOAD,
+                       True,
+                       False,
+                       True,
+                       1).serialize() == 0b00101001.to_bytes(length=1,
+                                                             byteorder='big')
+    assert HeaderFlags(HeaderFlags.Type.SACK,
+                       HeaderFlags.Operation.UPLOAD,
+                       True,
+                       False,
+                       True,
+                       3).serialize() == 0b11101011.to_bytes(length=1,
+                                                             byteorder='big')
+
 
 def test_HeaderFlags_deserialize():
-    assert HeaderFlags.deserialize(0b01101000) == HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.UPLOAD, True, False, True)
-    assert HeaderFlags.deserialize(0b00101001) == HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.DOWNLOAD, True, False, True, 1)
-    assert HeaderFlags.deserialize(0b11101011) == HeaderFlags(HeaderFlags.Type.SACK, HeaderFlags.Operation.UPLOAD, True, False, True, 3)
+    assert (
+        HeaderFlags.deserialize(0b01101000) ==
+        HeaderFlags(HeaderFlags.Type.SAW,
+                    HeaderFlags.Operation.UPLOAD,
+                    True,
+                    False,
+                    True
+                    )
+            )
+    assert (
+        HeaderFlags.deserialize(0b00101001) ==
+        HeaderFlags(HeaderFlags.Type.SAW,
+                    HeaderFlags.Operation.DOWNLOAD,
+                    True,
+                    False,
+                    True,
+                    1
+                    )
+    )
+    assert (
+        HeaderFlags.deserialize(0b11101011) ==
+        HeaderFlags(HeaderFlags.Type.SACK,
+                    HeaderFlags.Operation.UPLOAD,
+                    True,
+                    False,
+                    True,
+                    3
+                    )
+            )
 
 
 class PacketHeader:
     """
     Abstracción de Encabezado de un Paquete del Protocolo RDT.
     """
-    def __init__(self, sequence_number: int, ack_number: int, flags: HeaderFlags):
+    def __init__(self,
+                 sequence_number: int,
+                 ack_number: int,
+                 flags: HeaderFlags):
         self.sequence_number = sequence_number
         self.ack_number = ack_number
         self.flags = flags
@@ -165,11 +234,29 @@ class PacketHeader:
         f = HeaderFlags.deserialize(data[2])
         return cls(sn, an, f)
 
+
 def test_HeaderFlags():
-    packet = PacketHeader.deserialize(PacketHeader(12, 8, HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.UPLOAD, True, False, True)).serialize())
+    packet = PacketHeader.deserialize(
+        PacketHeader(
+            12,
+            8,
+            HeaderFlags(
+                HeaderFlags.Type.SAW,
+                HeaderFlags.Operation.UPLOAD,
+                True,
+                False,
+                True,
+            )
+        ).serialize()
+    )
     assert packet.sequence_number == 12
     assert packet.ack_number == 8
-    assert packet.flags == HeaderFlags(HeaderFlags.Type.SAW, HeaderFlags.Operation.UPLOAD, True, False, True)
+    assert packet.flags == HeaderFlags(HeaderFlags.Type.SAW,
+                                       HeaderFlags.Operation.UPLOAD,
+                                       True,
+                                       False,
+                                       True)
+
 
 class Packet:
     """
@@ -183,27 +270,31 @@ class Packet:
         if self.payload is None:
             return self.header.serialize()
         return self.header.serialize() + self.payload
-    
+
     @classmethod
     def deserialize(cls, packet_bytes):
         header = PacketHeader.deserialize(packet_bytes[:HEADER_SIZE])
         payload = packet_bytes[HEADER_SIZE:]
-        return cls(header.sequence_number, header.ack_number, header.flags, payload)
+        return cls(header.sequence_number,
+                   header.ack_number,
+                   header.flags,
+                   payload)
 
     def __str__(self):
-        return f"[SN={self.header.sequence_number},ACKN={self.header.ack_number},{self.header.flags}]"
-
-
+        return (
+            f"[SN={self.header.sequence_number},"
+            F"ACKN={self.header.ack_number},{self.header.flags}]")
 
 
 class MessageSynUpload:
     """
     Abstracción de un mensaje de Sincronización para iniciar operacion UPLOAD.
-    Se informa tamaño del archivo a subir y el nombre que debe tener en el destino.
+    Se informa tamaño del archivo a subir
+    y el nombre que debe tener en el destino.
     """
     def __init__(self, file_size: int, file_name: str):
         if file_size > 0xFFFFFF:
-            raise ValueError(f"Tamaño de archivo muy grande. Máximo: 15 MiB")
+            raise ValueError("Tamaño de archivo muy grande. Máximo: 15 MiB")
         self.file_size = file_size
         self.file_name = file_name
 
@@ -220,15 +311,18 @@ class MessageSynUpload:
         fn = message[4:4+fn_len].decode()
         return cls(fsize, fn)
 
+
 def test_MessageSynUpload():
-    message = MessageSynUpload.deserialize(MessageSynUpload(1024, "Hola.txt").serialize())
+    message = MessageSynUpload.deserialize(
+        MessageSynUpload(1024, "Hola.txt").serialize())
     assert message.file_size == 1024
     assert message.file_name == "Hola.txt"
 
 
 class MessageSynDownload:
     """
-    Abstracción de un mensaje de Sincronización para iniciar operacion DOWNLOAD.
+    Abstracción de un mensaje de Sincronización
+    para iniciar operacion DOWNLOAD.
     Se informa el nombre del archivo a descargar.
     """
     def __init__(self, file_name: str):
@@ -245,19 +339,22 @@ class MessageSynDownload:
         fn = message[1:1+fn_len].decode()
         return cls(fn)
 
+
 def test_MessageSynDownload():
-    message = MessageSynDownload.deserialize(MessageSynDownload("Hola.txt").serialize())
+    message = MessageSynDownload.deserialize(
+        MessageSynDownload("Hola.txt").serialize())
     assert message.file_name == "Hola.txt"
 
 
 class MessageSynAckDownload:
     """
     Abstracción de la respuesta del servidor al SYN de una operacion DOWNLOAD.
-    Se informa el tamaño del archivo a descargar, para que el cliente sepa cuándo está completo.
+    Se informa el tamaño del archivo a descargar,
+    para que el cliente sepa cuándo está completo.
     """
     def __init__(self, file_size: int):
         if file_size > 0xFFFFFF:
-            raise ValueError(f"Tamaño de archivo muy grande. Máximo: 15 MiB")
+            raise ValueError("Tamaño de archivo muy grande. Máximo: 15 MiB")
         self.file_size = file_size
 
     def serialize(self):
@@ -267,11 +364,10 @@ class MessageSynAckDownload:
     def deserialize(cls, message):
         return cls(int.from_bytes(message[:3], byteorder='big'))
 
+
 def test_MessageSynAckDownload():
-    assert MessageSynAckDownload.deserialize(MessageSynAckDownload(1024).serialize()).file_size == 1024
-
-
-
+    assert MessageSynAckDownload.deserialize(
+        MessageSynAckDownload(1024).serialize()).file_size == 1024
 
 
 class SackPayload:
@@ -295,11 +391,11 @@ class SackPayload:
     def deserialize(cls, data: bytes):
         if not data or len(data) < 1:
             return cls([])
-        
+
         num_blocks = data[0]
         blocks = []
         payload_data = data[1:]
-        
+
         for i in range(num_blocks):
             start_idx = i * 2
             end_idx = start_idx + 2
@@ -307,7 +403,7 @@ class SackPayload:
                 start = payload_data[start_idx]
                 end = payload_data[start_idx + 1]
                 blocks.append((start, end))
-                
+
         return cls(blocks)
 
     def __repr__(self):
@@ -315,7 +411,8 @@ class SackPayload:
         return f"SACK={ranges}"
 
 
-def compute_sack_blocks(out_of_order_seqs: set[int], rcv_nxt: int) -> list[tuple[int, int]]:
+def compute_sack_blocks(out_of_order_seqs: set[int],
+                        rcv_nxt: int) -> list[tuple[int, int]]:
     """
     Agrupa los paquetes fuera de orden en bloques contiguos [start, end],
     ordenados según la distancia circular respecto a rcv_nxt.
@@ -323,8 +420,10 @@ def compute_sack_blocks(out_of_order_seqs: set[int], rcv_nxt: int) -> list[tuple
     if not out_of_order_seqs:
         return []
 
-    # Ordenar por distancia circular desde rcv_nxt para manejar correctamente el paso de 255 a 0
-    sorted_seqs = sorted(out_of_order_seqs, key=lambda seq: (seq - rcv_nxt) % 256)
+    # Ordenar por distancia circular desde rcv_nxt
+    # para manejar correctamente el paso de 255 a 0
+    sorted_seqs = sorted(out_of_order_seqs,
+                         key=lambda seq: (seq - rcv_nxt) % 256)
 
     blocks = []
     start = sorted_seqs[0]
@@ -342,17 +441,14 @@ def compute_sack_blocks(out_of_order_seqs: set[int], rcv_nxt: int) -> list[tuple
     return blocks
 
 
-
-
-
-
 MAX_SEQ = 256
 # Tamaño de ventana de SACK (Selective Repeat). Debe ser <= MAX_SEQ / 2
 SACK_WINDOW_SIZE = 16
 
+
 class SequenceNumber:
     """Maneja la aritmética circular de los números de secuencia (0 a 255)."""
-    
+
     @staticmethod
     def next_seq(seq: int) -> int:
         return (seq + 1) % MAX_SEQ
@@ -364,5 +460,6 @@ class SequenceNumber:
 
     @staticmethod
     def is_in_window(seq: int, base: int, window_size: int) -> bool:
-        """Verifica si seq pertenece al rango [base, base + window_size - 1]."""
+        """Verifica si seq pertenece al
+        rango [base, base + window_size - 1]."""
         return SequenceNumber.distance(seq, base) < window_size

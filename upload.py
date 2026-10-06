@@ -5,18 +5,18 @@ import time
 
 from parser import upload_parse_args
 from protocolo import (
-    ERRORES_DESC, Packet, HeaderFlags,
-    MessageSynUpload
+    HeaderFlags,
 )
-from lib.channels import Channel, ServerChannel
+from lib.channels import ServerChannel
 from lib.saw_client import upload as upload_saw
 from lib.sack_client import upload as upload_sack
+
 
 def upload(server_address, protocol, source_path, dest_filename):
     logging.getLogger(__name__)
 
     if not os.path.exists(source_path):
-        raise IOError(f"El archivo de origen no existe.")
+        raise IOError("El archivo de origen no existe.")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -34,15 +34,23 @@ def upload(server_address, protocol, source_path, dest_filename):
     finally:
         sock.close()
 
+
 def main():
     args = upload_parse_args()
     logging.basicConfig(
-        level=max(logging.DEBUG, min(logging.CRITICAL, logging.WARNING + 10 * (args.quiet - args.verbose))),
+        level=max(
+            logging.DEBUG,
+            min(
+                logging.CRITICAL,
+                logging.WARNING + 10 * (args.quiet - args.verbose),
+                ),
+        ),
         format='%(levelname)s: %(message)s',
-    )
+        )
     logger = logging.getLogger(__name__)
     timer = time.monotonic()
-    logger.info(f"Preparando transferencia de {args.src} a {args.host}:{args.port}")
+    logger.info("Preparando transferencia de "
+                f"{args.src} a {args.host}:{args.port}")
     server_address = (args.host, args.port)
     dest_filename = args.name if args.name else os.path.basename(args.src)
     logger.info(f"Filename: {dest_filename}")
@@ -60,8 +68,10 @@ def main():
     except Exception as e:
         logger.critical(f"{e}")
 
-    logger.info(f"Ejecución finalizada")
-    print(f"Tiempo total de transferencia: {time.monotonic() - timer:.2f} segundos")
+    logger.info("Ejecución finalizada")
+    print("Tiempo total de transferencia: "
+          f"{time.monotonic() - timer:.2f} segundos")
+
 
 if __name__ == "__main__":
     main()
