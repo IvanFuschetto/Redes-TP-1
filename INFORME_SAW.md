@@ -422,6 +422,7 @@ SACK usa las mismas fórmulas de `EstimatedRTT`, `DevRTT` y RTO, con dos diferen
 El RTO inicial de la transferencia es el timeout con el que se completó el `SYN` (1 segundo si el `SYN` se confirmó en el primer intento).
 
 La muestra de RTT se toma como el tiempo transcurrido desde el último reinicio del temporizador hasta la llegada del ACK nuevo. Siguiendo el algoritmo de Karn, se descarta la muestra si hubo una retransmisión en ese intervalo, porque no se puede saber a qué envío corresponde el ACK.
+
 ---
 
 ## 4. Pruebas

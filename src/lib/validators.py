@@ -1,6 +1,6 @@
 import os.path
 
-from protocolo import ERR_FILE_TOO_BIG, ERR_FILE_EXISTS, ERR_FILE_NOT_EXISTS
+from lib.protocolo import ERR_FILE_TOO_BIG, ERR_FILE_EXISTS, ERR_FILE_NOT_EXISTS
 
 MAX_FILE_SIZE = 15 * 1024 * 1024
 

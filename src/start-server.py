@@ -3,8 +3,8 @@ import socket
 import threading
 from queue import Queue
 
-from parser import server_parse_args
-from protocolo import Packet, HeaderFlags, MAX_PACKET_SIZE
+from lib.parser import server_parse_args
+from lib.protocolo import Packet, HeaderFlags, MAX_PACKET_SIZE
 from lib.channels import ClientChannel
 from lib.sack_server \
     import upload_client_handler as upload_sack_client_handler

@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 import socket
 from queue import Queue, Empty
 
-from protocolo import Packet, HEADER_SIZE, MAX_PAYLOAD
+from lib.protocolo import Packet, HEADER_SIZE, MAX_PAYLOAD
 
 
 def get_next_sequence_number(sequence_number) -> int:

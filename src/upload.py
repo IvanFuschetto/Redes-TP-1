@@ -1,16 +1,22 @@
 import socket
+import os
 import logging
 import time
 
-from parser import download_parse_args
-from protocolo import HeaderFlags
+from lib.parser import upload_parse_args
+from lib.protocolo import (
+    HeaderFlags,
+)
 from lib.channels import ServerChannel
-from lib.sack_client import download as download_sack
-from lib.saw_client import download as download_saw
+from lib.saw_client import upload as upload_saw
+from lib.sack_client import upload as upload_sack
 
 
-def download(server_address, protocol, filename_server, dest_filename):
+def upload(server_address, protocol, source_path, dest_filename):
     logging.getLogger(__name__)
+
+    if not os.path.exists(source_path):
+        raise IOError("El archivo de origen no existe.")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -18,10 +24,10 @@ def download(server_address, protocol, filename_server, dest_filename):
         match protocol:
             case HeaderFlags.Type.SAW:
                 channel = ServerChannel(sock, server_address)
-                download_saw(channel, filename_server, dest_filename)
+                upload_saw(channel, source_path, dest_filename)
             case HeaderFlags.Type.SACK:
                 channel = ServerChannel(sock, server_address)
-                download_sack(channel, filename_server, dest_filename)
+                upload_sack(channel, source_path, dest_filename)
             case _:
                 raise ValueError(f"Protocolo {protocol} no implementado.")
 
@@ -30,20 +36,24 @@ def download(server_address, protocol, filename_server, dest_filename):
 
 
 def main():
-    args = download_parse_args()
+    args = upload_parse_args()
     logging.basicConfig(
-        level=max(logging.DEBUG, min(
-            logging.CRITICAL,
-            logging.WARNING + 10 * (args.quiet - args.verbose)
-            )),
+        level=max(
+            logging.DEBUG,
+            min(
+                logging.CRITICAL,
+                logging.WARNING + 10 * (args.quiet - args.verbose),
+                ),
+        ),
         format='%(levelname)s: %(message)s',
-    )
+        )
     logger = logging.getLogger(__name__)
-    server_address = (args.host, args.port)
-    dest_filename = args.dst if args.dst else args.name
     timer = time.monotonic()
-    logger.info(f"Preparando transferencia de {args.name} desde"
-                f"{args.host}:{args.port} a {dest_filename}")
+    logger.info("Preparando transferencia de "
+                f"{args.src} a {args.host}:{args.port}")
+    server_address = (args.host, args.port)
+    dest_filename = args.name if args.name else os.path.basename(args.src)
+    logger.info(f"Filename: {dest_filename}")
 
     if args.protocol == "stop-and-wait":
         protocol = HeaderFlags.Type.SAW
@@ -54,13 +64,12 @@ def main():
         return
 
     try:
-        download(server_address, protocol, args.name, dest_filename)
+        upload(server_address, protocol, args.src, dest_filename)
     except Exception as e:
         logger.critical(f"{e}")
-        raise e
 
     logger.info("Ejecución finalizada")
-    print("Tiempo total de transferencia: " +
+    print("Tiempo total de transferencia: "
           f"{time.monotonic() - timer:.2f} segundos")
 
 

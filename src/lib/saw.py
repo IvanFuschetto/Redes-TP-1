@@ -2,7 +2,7 @@ import logging
 import threading
 import time
 
-from protocolo import MAX_PAYLOAD, ERRORES_DESC, \
+from lib.protocolo import MAX_PAYLOAD, ERRORES_DESC, \
     Packet, HeaderFlags, ERR_IO_INTERNO
 from .channels import Channel, get_next_sequence_number
 

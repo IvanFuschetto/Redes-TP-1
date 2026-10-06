@@ -1,7 +1,7 @@
 import logging
 import os
 
-from protocolo import ERRORES_DESC, Packet, HeaderFlags, \
+from lib.protocolo import ERRORES_DESC, Packet, HeaderFlags, \
     SequenceNumber, MessageSynUpload, MessageSynDownload, \
     MessageSynAckDownload
 

@@ -2,7 +2,7 @@ import logging
 import os.path
 import threading
 
-from protocolo import Packet, MessageSynUpload, \
+from lib.protocolo import Packet, MessageSynUpload, \
     HeaderFlags, MessageSynDownload
 from lib.channels import Channel
 from lib.saw import receive_file, send_file

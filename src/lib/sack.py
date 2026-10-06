@@ -20,7 +20,7 @@ import os
 import time
 
 from .channels import Channel
-from protocolo import Packet, HeaderFlags, \
+from lib.protocolo import Packet, HeaderFlags, \
     SackPayload, SequenceNumber, compute_sack_blocks, MAX_SEQ, \
     MAX_PAYLOAD, SACK_WINDOW_SIZE, ERR_NONE, ERR_IO_INTERNO, ERRORES_DESC
 

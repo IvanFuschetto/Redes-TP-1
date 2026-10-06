@@ -2,7 +2,7 @@ import logging
 import os
 import threading
 
-from protocolo import ERRORES_DESC, Packet, HeaderFlags, \
+from lib.protocolo import ERRORES_DESC, Packet, HeaderFlags, \
     MessageSynUpload, MessageSynDownload
 
 from .channels import Channel
