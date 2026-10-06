@@ -426,6 +426,33 @@ La muestra de RTT se toma como el tiempo transcurrido desde el último reinicio 
 
 ## 4. Pruebas
 
+1 (5% perdidas archivos de 1MB):
+Stop And Wait:
+-Upload: 284,61 segundos (3684,26 de througput)
+-Download: 340,70 segundos (3077,71)
+
+Sack:
+-Upload: 21,11 segundos (49672)
+-Download: 27,84 segundos (37664,37)
+
+2 (10% perdidas archivos dd 5MB):
+stop and wait
+-Upload:2383, 7 segundos (2199,48)
+-Download:2404,6 segundos (2182,17)
+
+Sack:
+-Upload:418,83 segundos (12517,92)
+-Download:424,04 segundos (12364,12)
+
+3 (12% perdidas archivos de 7MB):
+Stop and Wait:
+-Upload:3277,8 segundos (2239,31)
+-Download:3298,4 segundos (2225,33)
+
+Sack:
+-Upload:891,6 segundos (8232,43)
+-Download:900,3 segundos (8152,87)
+
 ## 5. Preguntas 
 
 #### 1- Describa la arquitectura Cliente-Servidor
