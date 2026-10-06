@@ -426,32 +426,38 @@ La muestra de RTT se toma como el tiempo transcurrido desde el último reinicio 
 
 ## 4. Pruebas
 
-1 (5% perdidas archivos de 1MB):
+1 (5% perdidas  delay de 75ms archivos de 1MB):
 Stop And Wait:
--Upload: 284,61 segundos (3684,26 de througput)
+-Upload: 284,61 segundos (3684,26 de throughput)
 -Download: 340,70 segundos (3077,71)
+Promedio de throughput: 3380,985
 
 Sack:
 -Upload: 21,11 segundos (49672)
 -Download: 27,84 segundos (37664,37)
+Promedio: 43668,185
 
-2 (10% perdidas archivos dd 5MB):
-stop and wait
--Upload:2383, 7 segundos (2199,48)
--Download:2404,6 segundos (2182,17)
+2 (10% perdidas delay de 5ms archivos de 5MB):
+Stop And Wait
+-Upload:207,78 segundos (25232,84)
+-Download:196,85 segundos (26633,88)
+Promedio: 25933,36
 
 Sack:
--Upload:418,83 segundos (12517,92)
--Download:424,04 segundos (12364,12)
+-Upload:101,84 segundos (51481,54)
+-Download:120 segundos (43690,67)
+Promedio: 47586,105
 
-3 (12% perdidas archivos de 7MB):
+3 (12% perdidas delay de 75ms archivos de 7MB):
 Stop and Wait:
 -Upload:3277,8 segundos (2239,31)
 -Download:3298,4 segundos (2225,33)
+Promedio: 2232,32
 
 Sack:
 -Upload:891,6 segundos (8232,43)
 -Download:900,3 segundos (8152,87)
+Promedio: 8192,65
 
 ## 5. Preguntas 
 
